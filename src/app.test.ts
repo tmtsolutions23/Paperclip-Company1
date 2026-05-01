@@ -137,7 +137,7 @@ describe("voice edge app", () => {
     expect(retryBody.status).toBe("retrying");
   });
 
-  it("renders the internal admin console page with attention-first operations sections", async () => {
+  it("redirects internal admin traffic to the React cutover route", async () => {
     const app = buildApp(config);
     apps.push(app);
 
@@ -156,12 +156,8 @@ describe("voice edge app", () => {
       url: "/internal/admin",
     });
 
-    expect(response.statusCode).toBe(200);
-    expect(response.headers["content-type"]).toContain("text/html");
-    expect(response.body).toContain("Pilot Operations Console");
-    expect(response.body).toContain("What needs attention right now?");
-    expect(response.body).toContain("Health summary");
-    expect(response.body).toContain("Recent changes");
+    expect(response.statusCode).toBe(303);
+    expect(response.headers.location).toBe("/ui/overview");
   });
 
   it("lets an operator update account and routing settings from HTML forms", async () => {
@@ -286,7 +282,7 @@ describe("voice edge app", () => {
     expect(updatedFailures.json().syncFailures[0].status).toBe("handled_manually");
   });
 
-  it("links callbacks and sync failures back to call and account context", async () => {
+  it("redirects callback and sync list pages to React cutover routes", async () => {
     const adminStore = new AdminStore();
     const callSessionStore = new CallSessionStore();
     callSessionStore.upsert("CA_seed_callback", {
@@ -308,18 +304,16 @@ describe("voice edge app", () => {
       url: "/callbacks",
     });
 
-    expect(callbacksPage.statusCode).toBe(200);
-    expect(callbacksPage.body).toContain('href="/accounts/pilot_account"');
-    expect(callbacksPage.body).toContain('href="/calls/CA_seed_callback"');
+    expect(callbacksPage.statusCode).toBe(303);
+    expect(callbacksPage.headers.location).toBe("/ui/callbacks");
 
     const syncFailuresPage = await app.inject({
       method: "GET",
       url: "/sync-failures",
     });
 
-    expect(syncFailuresPage.statusCode).toBe(200);
-    expect(syncFailuresPage.body).toContain('href="/accounts/pilot_account"');
-    expect(syncFailuresPage.body).toContain('href="/calls/CA_seed_callback"');
+    expect(syncFailuresPage.statusCode).toBe(303);
+    expect(syncFailuresPage.headers.location).toBe("/ui/sync");
   });
 
   it("surfaces review context and linked operator paths on the call detail page", async () => {
