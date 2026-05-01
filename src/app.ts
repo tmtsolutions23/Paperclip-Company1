@@ -266,7 +266,9 @@ function readinessSummary(items: Array<{ complete: boolean }>): string {
   return `${completed}/${items.length} ready`;
 }
 
-function renderPage(title: string, content: string): string {
+function renderPage(title: string, content: string, options: { showMasthead?: boolean } = {}): string {
+  const showMasthead = options.showMasthead ?? true;
+
   return `<!doctype html>
 <html lang="en">
   <head>
@@ -375,7 +377,8 @@ function renderPage(title: string, content: string): string {
     </style>
   </head>
   <body>
-    <header>
+    ${showMasthead
+      ? `<header>
       <div class="masthead">
         <div class="eyebrow">Operator Product / Internal Pilot Console</div>
         <div class="title-row">
@@ -392,7 +395,8 @@ function renderPage(title: string, content: string): string {
           </nav>
         </div>
       </div>
-    </header>
+    </header>`
+      : ""}
     <main>${content}</main>
   </body>
 </html>`;
@@ -732,7 +736,7 @@ function renderPublicSite(account: Account): string {
       ? "Electrical"
       : "Home services";
 
-  return `
+  return renderPage(`${account.brandName ?? account.name} Reception`, `
     <div class="public-shell" style="--accent:${escapeHtml(brandPrimary)};--accent-strong:${escapeHtml(brandPrimary)};--olive:${escapeHtml(brandSecondary)};--panel-strong:${escapeHtml(surfaceBase)};">
       <header>
         <div class="public-nav">
@@ -839,7 +843,7 @@ function renderPublicSite(account: Account): string {
           </div>
         </form>
       </main>
-    </div>`;
+    </div>`, { showMasthead: false });
 }
 
 function renderTenantPicker(accounts: Account[], viewerEmail: string): string {
