@@ -23,5 +23,8 @@ const envSchema = z.object({
 export type AppConfig = z.infer<typeof envSchema>;
 
 export function readConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
-  return envSchema.parse(env);
+  return envSchema.parse({
+    ...env,
+    PUBLIC_BASE_URL: env.PUBLIC_BASE_URL || env.RENDER_EXTERNAL_URL,
+  });
 }
