@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { buildApp } from "./app.js";
+import { CallSessionStore } from "./state/call-session-store.js";
 import { AdminStore } from "./state/admin-store.js";
 
 const config = {
@@ -271,5 +272,98 @@ describe("voice edge app", () => {
       url: "/api/sync-failures",
     });
     expect(updatedFailures.json().syncFailures[0].status).toBe("handled_manually");
+  });
+
+  it("links callbacks and sync failures back to call and account context", async () => {
+    const adminStore = new AdminStore();
+    const callSessionStore = new CallSessionStore();
+    callSessionStore.upsert("CA_seed_callback", {
+      accountId: "pilot_account",
+      from: "+15550002222",
+      promptVersionId: "prompt-v3",
+      routingRuleVersionId: "rules-pilot_account-v4",
+      confidenceState: "low",
+      requiresHumanReview: true,
+      syncStatus: "failed",
+      callbackStatus: "assigned",
+    });
+
+    const app = buildApp(config, { adminStore, callSessionStore });
+    apps.push(app);
+
+    const callbacksPage = await app.inject({
+      method: "GET",
+      url: "/callbacks",
+    });
+
+    expect(callbacksPage.statusCode).toBe(200);
+    expect(callbacksPage.body).toContain('href="/accounts/pilot_account"');
+    expect(callbacksPage.body).toContain('href="/calls/CA_seed_callback"');
+
+    const syncFailuresPage = await app.inject({
+      method: "GET",
+      url: "/sync-failures",
+    });
+
+    expect(syncFailuresPage.statusCode).toBe(200);
+    expect(syncFailuresPage.body).toContain('href="/accounts/pilot_account"');
+    expect(syncFailuresPage.body).toContain('href="/calls/CA_seed_callback"');
+  });
+
+  it("surfaces review context and linked operator paths on the call detail page", async () => {
+    const adminStore = new AdminStore();
+    const callSessionStore = new CallSessionStore();
+    callSessionStore.upsert("CA_review", {
+      accountId: "pilot_account",
+      from: "+15553334444",
+      disposition: "callback_capture",
+      promptVersionId: "prompt-v7",
+      routingRuleVersionId: "rules-pilot_account-v9",
+      confidenceState: "low",
+      requiresHumanReview: true,
+      syncStatus: "failed",
+      callbackStatus: "assigned",
+      fallbackReason: "Realtime bridge dropped before tool handoff",
+      transcript: ["Caller: basement flood", "AI: capturing callback details"],
+    });
+    adminStore.seedCallbackTask({
+      accountId: "pilot_account",
+      callSid: "CA_review",
+      customerName: "Riley Chen",
+      phone: "+15550008888",
+      requestedService: "basement flood",
+      urgency: "emergency",
+      dueAt: "2026-05-01T09:00:00.000Z",
+      ownerName: "Dispatch lead",
+      status: "assigned",
+      notes: "Escalate after transcript review.",
+    });
+    adminStore.seedSyncFailure({
+      accountId: "pilot_account",
+      callSid: "CA_review",
+      targetSystem: "Jobber",
+      failureReason: "Missing service address",
+      retryCount: 2,
+      lastAttemptAt: "2026-05-01T08:45:00.000Z",
+      payloadSummary: "lead:create Riley Chen basement flood",
+      status: "pending",
+      sentryEventId: "sentry-review-1",
+    });
+
+    const app = buildApp(config, { adminStore, callSessionStore });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/calls/CA_review",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toContain("Review Required");
+    expect(response.body).toContain("prompt-v7");
+    expect(response.body).toContain("rules-pilot_account-v9");
+    expect(response.body).toContain('href="/accounts/pilot_account/routing"');
+    expect(response.body).toContain('href="/callbacks"');
+    expect(response.body).toContain('href="/sync-failures"');
   });
 });
