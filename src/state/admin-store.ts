@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Account, AuditEntry, CallbackTask, RoutingRule, SyncFailure, SyncFailureStatus } from "../domain/admin.js";
+import type { Account, AuditEntry, CallbackTask, RoutingRule, SyncFailure, SyncFailureStatus, UserMembership } from "../domain/admin.js";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -22,6 +22,7 @@ export class AdminStore {
   private readonly routingRules = new Map<string, RoutingRule>();
   private readonly callbackTasks = new Map<string, CallbackTask>();
   private readonly syncFailures = new Map<string, SyncFailure>();
+  private readonly userMemberships = new Map<string, UserMembership>();
   private readonly auditEntries: AuditEntry[] = [];
 
   listAccounts(): Account[] {
@@ -53,6 +54,15 @@ export class AdminStore {
 
   getAccount(accountId: string): Account | undefined {
     return this.accounts.get(accountId);
+  }
+
+  getAccountBySlug(accountSlug: string): Account | undefined {
+    return this.listAccounts().find((account) => account.slug === accountSlug);
+  }
+
+  getAccountByPublicHost(host: string): Account | undefined {
+    const normalizedHost = host.trim().toLowerCase();
+    return this.listAccounts().find((account) => account.publicHost?.trim().toLowerCase() === normalizedHost);
   }
 
   updateAccount(accountId: string, patch: Partial<Omit<Account, "id" | "createdAt" | "updatedAt">>): Account | undefined {
@@ -204,9 +214,83 @@ export class AdminStore {
     return this.auditEntries.slice(-limit).reverse();
   }
 
+  listUserMemberships(): UserMembership[] {
+    return [...this.userMemberships.values()].sort((a, b) => {
+      if (a.userId !== b.userId) {
+        return a.userId.localeCompare(b.userId);
+      }
+
+      if (a.isDefault !== b.isDefault) {
+        return a.isDefault ? -1 : 1;
+      }
+
+      return a.accountId.localeCompare(b.accountId);
+    });
+  }
+
+  createUserMembership(input: Omit<UserMembership, "id" | "createdAt" | "updatedAt" | "emailNormalized"> & { emailNormalized: string }): UserMembership {
+    const timestamp = nowIso();
+    const membership: UserMembership = {
+      id: randomUUID(),
+      ...input,
+      emailNormalized: normalizeEmail(input.emailNormalized),
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+
+    if (membership.isDefault) {
+      for (const existing of this.userMemberships.values()) {
+        if (existing.userId === membership.userId && existing.isDefault) {
+          this.userMemberships.set(existing.id, { ...existing, isDefault: false, updatedAt: timestamp });
+        }
+      }
+    }
+
+    this.userMemberships.set(membership.id, membership);
+    this.recordAudit("user_membership", membership.id, "created", {
+      accountId: membership.accountId,
+      userId: membership.userId,
+      isDefault: membership.isDefault,
+    });
+    return membership;
+  }
+
+  listMembershipsForViewer(userId: string, email: string): Array<UserMembership & { account: Account }> {
+    const normalizedEmail = normalizeEmail(email);
+
+    return this.listUserMemberships()
+      .filter((membership) => membership.userId === userId && membership.emailNormalized === normalizedEmail)
+      .map((membership) => {
+        const account = this.getAccount(membership.accountId);
+        return account ? { ...membership, account } : undefined;
+      })
+      .filter((membership): membership is UserMembership & { account: Account } => membership !== undefined)
+      .filter((membership) => membership.account.status === "active")
+      .sort((a, b) => {
+        if (a.isDefault !== b.isDefault) {
+          return a.isDefault ? -1 : 1;
+        }
+
+        return a.account.name.localeCompare(b.account.name);
+      });
+  }
+
   seedAccount(account: Omit<Account, "createdAt" | "updatedAt">): void {
     if (!this.accounts.has(account.id)) {
       this.createAccount(account);
+    }
+  }
+
+  seedUserMembership(membership: Omit<UserMembership, "id" | "createdAt" | "updatedAt">): void {
+    const exists = this.listUserMemberships().some(
+      (existing) =>
+        existing.userId === membership.userId &&
+        existing.accountId === membership.accountId &&
+        existing.emailNormalized === normalizeEmail(membership.emailNormalized),
+    );
+
+    if (!exists) {
+      this.createUserMembership(membership);
     }
   }
 
@@ -233,4 +317,8 @@ export class AdminStore {
       detail,
     });
   }
+}
+
+function normalizeEmail(value: string): string {
+  return value.trim().toLowerCase();
 }

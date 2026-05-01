@@ -22,6 +22,10 @@ const config = {
 };
 
 const apps: Array<ReturnType<typeof buildApp>> = [];
+const tenantViewerHeaders = {
+  "x-viewer-user-id": "user-pilot-admin",
+  "x-viewer-email": "ops@pilotplumbing.example",
+};
 
 afterEach(async () => {
   while (apps.length > 0) {
@@ -133,7 +137,7 @@ describe("voice edge app", () => {
     expect(retryBody.status).toBe("retrying");
   });
 
-  it("renders the internal admin console page with pilot operations sections", async () => {
+  it("renders the internal admin console page with attention-first operations sections", async () => {
     const app = buildApp(config);
     apps.push(app);
 
@@ -155,8 +159,9 @@ describe("voice edge app", () => {
     expect(response.statusCode).toBe(200);
     expect(response.headers["content-type"]).toContain("text/html");
     expect(response.body).toContain("Pilot Operations Console");
-    expect(response.body).toContain("Configured Accounts");
-    expect(response.body).toContain("Call Review");
+    expect(response.body).toContain("What needs attention right now?");
+    expect(response.body).toContain("Health summary");
+    expect(response.body).toContain("Recent changes");
   });
 
   it("lets an operator update account and routing settings from HTML forms", async () => {
@@ -168,11 +173,16 @@ describe("voice edge app", () => {
       url: "/accounts/pilot_account",
       payload: {
         name: "Pilot Plumbing North",
+        slug: "pilot-plumbing-north",
+        publicHost: "north.voice.example.com",
+        status: "active",
+        brandName: "Pilot Plumbing North",
         timezone: "America/Denver",
         primaryPhoneNumber: "+15558889999",
         emergencyEscalationPhone: "+15557770000",
         smsAckTemplate: "Updated SMS copy",
         consentScript: "Updated consent line",
+        brandTheme: JSON.stringify({ accent: "#114488" }),
         overflowModeEnabled: "on",
       },
     });
@@ -208,6 +218,8 @@ describe("voice edge app", () => {
       url: "/api/accounts/pilot_account",
     });
     expect(accountDetail.json().name).toBe("Pilot Plumbing North");
+    expect(accountDetail.json().slug).toBe("pilot-plumbing-north");
+    expect(accountDetail.json().publicHost).toBe("north.voice.example.com");
     expect(accountDetail.json().timezone).toBe("America/Denver");
 
     const routingDetail = await app.inject({
@@ -365,5 +377,301 @@ describe("voice edge app", () => {
     expect(response.body).toContain('href="/accounts/pilot_account/routing"');
     expect(response.body).toContain('href="/callbacks"');
     expect(response.body).toContain('href="/sync-failures"');
+  });
+
+  it("resolves public tenants from host first and slug path as fallback", async () => {
+    const app = buildApp(config);
+    apps.push(app);
+
+    const hostResponse = await app.inject({
+      method: "GET",
+      url: "/api/public/resolve?host=pilot-plumbing.voice.example.com",
+    });
+
+    expect(hostResponse.statusCode).toBe(200);
+    expect(hostResponse.json()).toMatchObject({
+      accountSlug: "pilot-plumbing",
+      source: "host",
+    });
+
+    const slugPage = await app.inject({
+      method: "GET",
+      url: "/sites/pilot-plumbing",
+    });
+
+    expect(slugPage.statusCode).toBe(200);
+    expect(slugPage.body).toContain("Pilot Plumbing");
+    expect(slugPage.body).toContain("Never miss the service calls that turn into revenue.");
+    expect(slugPage.body).toContain("Book a demo");
+  });
+
+  it("renders the public landing page from the root route", async () => {
+    const app = buildApp(config);
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toContain("How it works");
+    expect(response.body).toContain("Built for real service workflows");
+    expect(response.body).toContain("Request demo");
+  });
+
+  it("separates account creation from the account list view", async () => {
+    const app = buildApp(config);
+    apps.push(app);
+
+    const accountsPage = await app.inject({
+      method: "GET",
+      url: "/accounts",
+    });
+
+    expect(accountsPage.statusCode).toBe(200);
+    expect(accountsPage.body).toContain("New account");
+    expect(accountsPage.body).toContain("Launch Readiness");
+    expect(accountsPage.body).not.toContain("Create pilot account");
+
+    const newAccountPage = await app.inject({
+      method: "GET",
+      url: "/accounts/new",
+    });
+
+    expect(newAccountPage.statusCode).toBe(200);
+    expect(newAccountPage.body).toContain("Create pilot account");
+    expect(newAccountPage.body).toContain("Consent script");
+  });
+
+  it("redirects a single-membership user straight to the tenant admin path", async () => {
+    const app = buildApp(config);
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/login/resolve",
+      payload: {
+        userId: "user-pilot-admin",
+        email: " Ops@PilotPlumbing.Example ",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      outcome: "redirect",
+      location: "/app/pilot-plumbing",
+    });
+  });
+
+  it("sends multi-membership users to account selection unless a default or last-used slug resolves them", async () => {
+    const adminStore = new AdminStore();
+    adminStore.seedAccount({
+      id: "pilot_account_two",
+      name: "Pilot HVAC",
+      slug: "pilot-hvac",
+      publicHost: "pilot-hvac.voice.example.com",
+      status: "active",
+      brandName: "Pilot HVAC",
+      brandTheme: {},
+      timezone: "America/Chicago",
+      primaryPhoneNumber: "+15550003333",
+      overflowModeEnabled: true,
+      afterHoursScheduleEnabled: true,
+      emergencyEscalationPhone: "+15550004444",
+      smsAckTemplate: "HVAC SMS",
+      consentScript: "HVAC consent",
+    });
+    adminStore.seedUserMembership({
+      userId: "user-multi",
+      accountId: "pilot_account",
+      emailNormalized: "multi@example.com",
+      role: "admin",
+      isDefault: false,
+    });
+    adminStore.seedUserMembership({
+      userId: "user-multi",
+      accountId: "pilot_account_two",
+      emailNormalized: "multi@example.com",
+      role: "admin",
+      isDefault: false,
+    });
+
+    const app = buildApp(config, { adminStore });
+    apps.push(app);
+
+    const unresolved = await app.inject({
+      method: "POST",
+      url: "/api/login/resolve",
+      payload: {
+        userId: "user-multi",
+        email: "multi@example.com",
+      },
+    });
+
+    expect(unresolved.statusCode).toBe(200);
+    expect(unresolved.json()).toMatchObject({
+      outcome: "select_account",
+      location: "/app/select-account",
+    });
+
+    const lastUsed = await app.inject({
+      method: "POST",
+      url: "/api/login/resolve",
+      payload: {
+        userId: "user-multi",
+        email: "multi@example.com",
+        lastAccountSlug: "pilot-hvac",
+      },
+    });
+
+    expect(lastUsed.json()).toMatchObject({
+      outcome: "redirect",
+      location: "/app/pilot-hvac",
+    });
+  });
+
+  it("rejects tenant admin access when the signed-in viewer lacks membership for that slug", async () => {
+    const adminStore = new AdminStore();
+    adminStore.seedAccount({
+      id: "pilot_account_two",
+      name: "Pilot HVAC",
+      slug: "pilot-hvac",
+      publicHost: "pilot-hvac.voice.example.com",
+      status: "active",
+      brandName: "Pilot HVAC",
+      brandTheme: {},
+      timezone: "America/Chicago",
+      primaryPhoneNumber: "+15550003333",
+      overflowModeEnabled: true,
+      afterHoursScheduleEnabled: true,
+      emergencyEscalationPhone: "+15550004444",
+      smsAckTemplate: "HVAC SMS",
+      consentScript: "HVAC consent",
+    });
+
+    const app = buildApp(config, { adminStore });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/app/pilot-hvac",
+      headers: tenantViewerHeaders,
+    });
+
+    expect(response.statusCode).toBe(403);
+  });
+
+  it("serves tenant-scoped admin pages and rewrites links under /app/:accountSlug", async () => {
+    const adminStore = new AdminStore();
+    const callSessionStore = new CallSessionStore();
+    callSessionStore.upsert("CA_scoped", {
+      accountId: "pilot_account",
+      from: "+15551110000",
+      disposition: "callback_capture",
+      promptVersionId: "prompt-v4",
+      routingRuleVersionId: "rules-pilot_account-v4",
+      confidenceState: "low",
+      requiresHumanReview: true,
+      syncStatus: "failed",
+      callbackStatus: "assigned",
+    });
+
+    const app = buildApp(config, { adminStore, callSessionStore });
+    apps.push(app);
+
+    const callsPage = await app.inject({
+      method: "GET",
+      url: "/app/pilot-plumbing/calls",
+      headers: tenantViewerHeaders,
+    });
+
+    expect(callsPage.statusCode).toBe(200);
+    expect(callsPage.body).toContain('href="/app/pilot-plumbing/calls/CA_scoped"');
+    expect(callsPage.body).toContain('href="/app/pilot-plumbing/accounts"');
+
+    const callbacksPage = await app.inject({
+      method: "GET",
+      url: "/app/pilot-plumbing/callbacks",
+      headers: tenantViewerHeaders,
+    });
+
+    expect(callbacksPage.statusCode).toBe(200);
+    expect(callbacksPage.body).toContain('action="/app/pilot-plumbing/callbacks/');
+  });
+
+  it("enforces tenant scope on the new admin APIs and forms", async () => {
+    const adminStore = new AdminStore();
+    adminStore.seedAccount({
+      id: "pilot_account_two",
+      name: "Pilot HVAC",
+      slug: "pilot-hvac",
+      publicHost: "pilot-hvac.voice.example.com",
+      status: "active",
+      brandName: "Pilot HVAC",
+      brandTheme: {},
+      timezone: "America/Chicago",
+      primaryPhoneNumber: "+15550003333",
+      overflowModeEnabled: true,
+      afterHoursScheduleEnabled: true,
+      emergencyEscalationPhone: "+15550004444",
+      smsAckTemplate: "HVAC SMS",
+      consentScript: "HVAC consent",
+    });
+
+    const app = buildApp(config, { adminStore });
+    apps.push(app);
+
+    const scopedAccount = await app.inject({
+      method: "GET",
+      url: "/api/app/pilot-plumbing/account",
+      headers: tenantViewerHeaders,
+    });
+
+    expect(scopedAccount.statusCode).toBe(200);
+    expect(scopedAccount.json().slug).toBe("pilot-plumbing");
+
+    const forbiddenAccount = await app.inject({
+      method: "GET",
+      url: "/api/app/pilot-hvac/account",
+      headers: tenantViewerHeaders,
+    });
+
+    expect(forbiddenAccount.statusCode).toBe(403);
+
+    const routedFormUpdate = await app.inject({
+      method: "POST",
+      url: "/app/pilot-plumbing/routing",
+      headers: tenantViewerHeaders,
+      payload: {
+        hours_monday: "06:00-12:00",
+        hours_tuesday: "",
+        hours_wednesday: "",
+        hours_thursday: "",
+        hours_friday: "",
+        hours_saturday: "",
+        hours_sunday: "",
+        maxActiveCalls: "5",
+        maxQueueDepth: "1",
+        defaultDisposition: "callback",
+        versionId: "rules-pilot_account-v5",
+        serviceAreaZipCodes: "60601",
+        supportedServiceTypes: "plumbing",
+        emergencyKeywords: "flood",
+        unsupportedIntents: "billing",
+      },
+    });
+
+    expect(routedFormUpdate.statusCode).toBe(303);
+    expect(routedFormUpdate.headers.location).toBe("/app/pilot-plumbing/routing");
+
+    const scopedRouting = await app.inject({
+      method: "GET",
+      url: "/api/app/pilot-plumbing/routing",
+      headers: tenantViewerHeaders,
+    });
+
+    expect(scopedRouting.json().versionId).toBe("rules-pilot_account-v5");
+    expect(scopedRouting.json().overflowThresholds.maxActiveCalls).toBe(5);
   });
 });

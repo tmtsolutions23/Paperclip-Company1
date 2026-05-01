@@ -1,6 +1,7 @@
 import Fastify from "fastify";
 import formbody from "@fastify/formbody";
 import websocket, { type WebSocket } from "@fastify/websocket";
+import type { FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import type { AppConfig } from "./config.js";
 import type { Account, CallbackTask, RoutingRule, SyncFailure } from "./domain/admin.js";
@@ -21,6 +22,10 @@ function websocketUrl(baseUrl: string, path: string): string {
 const accountCreateSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
+  slug: z.string().min(1),
+  publicHost: z.string().min(1).optional(),
+  status: z.enum(["active", "inactive"]),
+  brandName: z.string().min(1).optional(),
   timezone: z.string().min(1),
   primaryPhoneNumber: z.string().min(1),
   overflowModeEnabled: z.boolean(),
@@ -28,6 +33,7 @@ const accountCreateSchema = z.object({
   emergencyEscalationPhone: z.string().min(1),
   smsAckTemplate: z.string().min(1),
   consentScript: z.string().min(1),
+  brandTheme: z.record(z.string(), z.string()).optional(),
 });
 
 const accountPatchSchema = accountCreateSchema.omit({ id: true }).partial();
@@ -71,6 +77,12 @@ const syncFailureActionSchema = z.object({
   action: z.enum(["retry", "handled_manually", "resolved"]),
 });
 
+const loginResolutionSchema = z.object({
+  userId: z.string().min(1),
+  email: z.string().trim().email(),
+  lastAccountSlug: z.string().min(1).optional(),
+});
+
 type HtmlFormBody = Record<string, string | undefined>;
 type BusinessHourSlot = { start: string; end: string };
 
@@ -83,6 +95,27 @@ function parseLines(value: string | undefined): string[] {
     .split(/\r?\n|,/)
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0);
+}
+
+function normalizeEmail(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function normalizeHost(value: string): string {
+  return value.trim().toLowerCase().replace(/:\d+$/, "");
+}
+
+function parseBrandTheme(value: string | undefined): Record<string, string> | undefined {
+  if (!value?.trim()) {
+    return undefined;
+  }
+
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return z.record(z.string(), z.string()).parse(parsed);
+  } catch {
+    return undefined;
+  }
 }
 
 function encodeFormValue(value: string): string {
@@ -173,6 +206,64 @@ function renderDefinitionList(items: Array<{ label: string; value: string }>): s
         )
         .join("")}
     </dl>`;
+}
+
+function renderChecklist(items: Array<{ label: string; complete: boolean; hint?: string }>): string {
+  return `
+    <ul class="checklist">
+      ${items
+        .map(
+          (item) => `
+            <li>
+              <span class="checkmark ${item.complete ? "ready" : "pending"}">${item.complete ? "Ready" : "Needs setup"}</span>
+              <div>
+                <strong>${escapeHtml(item.label)}</strong>
+                ${item.hint ? `<span class="entity-sublabel">${escapeHtml(item.hint)}</span>` : ""}
+              </div>
+            </li>`,
+        )
+        .join("")}
+    </ul>`;
+}
+
+function renderEmptyState(title: string, detail: string): string {
+  return `
+    <div class="card">
+      <h3>${escapeHtml(title)}</h3>
+      <p>${escapeHtml(detail)}</p>
+    </div>`;
+}
+
+function computeLaunchReadiness(account: Account, routingRule?: RoutingRule): Array<{ label: string; complete: boolean; hint?: string }> {
+  return [
+    {
+      label: "Hours configured",
+      complete: Boolean(routingRule && Object.values(routingRule.businessHours).some((slots) => slots.length > 0)),
+      hint: routingRule ? `Version ${routingRule.versionId}` : "No routing rule saved yet",
+    },
+    {
+      label: "Escalation number present",
+      complete: account.emergencyEscalationPhone.trim().length > 0,
+    },
+    {
+      label: "SMS template present",
+      complete: account.smsAckTemplate.trim().length > 0,
+    },
+    {
+      label: "Consent copy present",
+      complete: account.consentScript.trim().length > 0,
+    },
+    {
+      label: "Routing version deployed",
+      complete: Boolean(routingRule?.versionId),
+      hint: routingRule ? `Deployed ${formatTimestamp(routingRule.deployedAt)}` : "Waiting for first deployment",
+    },
+  ];
+}
+
+function readinessSummary(items: Array<{ complete: boolean }>): string {
+  const completed = items.filter((item) => item.complete).length;
+  return `${completed}/${items.length} ready`;
 }
 
 function renderPage(title: string, content: string): string {
@@ -494,6 +585,198 @@ function renderPage(title: string, content: string): string {
         gap: 10px;
         align-items: center;
       }
+      .nav-actions {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        align-items: center;
+      }
+      .stack {
+        display: grid;
+        gap: 14px;
+      }
+      .overview-shell {
+        display: grid;
+        gap: 22px;
+      }
+      .metric-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+        gap: 14px;
+      }
+      .metric-card {
+        padding: 18px;
+        border-radius: 20px;
+        border: 1px solid var(--line);
+        background: rgba(255, 252, 247, 0.84);
+      }
+      .metric-card strong {
+        display: block;
+        font-family: "Didot", "Bodoni 72", serif;
+        font-size: 2rem;
+        color: var(--accent-strong);
+      }
+      .checklist {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+        display: grid;
+        gap: 12px;
+      }
+      .checklist li {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 12px;
+        align-items: start;
+        padding-top: 12px;
+        border-top: 1px solid var(--line);
+      }
+      .checkmark {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 94px;
+        padding: 5px 10px;
+        border-radius: 999px;
+        font-size: 0.72rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        font-family: "Courier New", monospace;
+      }
+      .checkmark.ready {
+        background: rgba(70, 84, 69, 0.14);
+        color: var(--olive);
+      }
+      .checkmark.pending {
+        background: rgba(142, 107, 40, 0.16);
+        color: #6d5115;
+      }
+      .activity-list {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+        display: grid;
+        gap: 12px;
+      }
+      .activity-list li {
+        border-top: 1px solid var(--line);
+        padding-top: 12px;
+      }
+      .activity-list p {
+        margin: 4px 0 0;
+      }
+      .attention-list {
+        display: grid;
+        gap: 14px;
+      }
+      .attention-card {
+        padding: 18px;
+        border-radius: 20px;
+        border: 1px solid var(--line);
+        background: rgba(255, 252, 247, 0.88);
+      }
+      .attention-card h3, .attention-card p {
+        margin-bottom: 8px;
+      }
+      .filter-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-bottom: 18px;
+      }
+      .page-intro {
+        display: grid;
+        gap: 12px;
+        margin-bottom: 22px;
+      }
+      .public-shell {
+        min-height: 100vh;
+        background:
+          radial-gradient(circle at top left, rgba(186, 79, 45, 0.2), transparent 34%),
+          linear-gradient(180deg, #f8efe3 0%, #f2e4d0 52%, #ead8bf 100%);
+      }
+      .public-shell header, .public-shell main {
+        max-width: 1180px;
+      }
+      .public-nav {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        align-items: center;
+        gap: 14px;
+      }
+      .public-nav nav {
+        margin-top: 0;
+      }
+      .public-hero {
+        display: grid;
+        gap: 22px;
+        grid-template-columns: minmax(0, 1.15fr) minmax(320px, 0.85fr);
+        align-items: start;
+      }
+      .proof-card, .timeline-card, .faq-item, .industry-band {
+        background: rgba(255, 251, 245, 0.88);
+        border: 1px solid rgba(115, 81, 56, 0.18);
+        border-radius: 24px;
+        box-shadow: var(--shadow);
+      }
+      .proof-card, .timeline-card, .industry-band {
+        padding: 22px;
+      }
+      .timeline {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+        display: grid;
+        gap: 14px;
+      }
+      .timeline li {
+        display: grid;
+        gap: 4px;
+        padding-left: 16px;
+        border-left: 3px solid rgba(142, 47, 28, 0.22);
+      }
+      .logo-strip {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+        gap: 12px;
+      }
+      .logo-strip div, .step-grid article, .proof-grid article, .comparison-grid article {
+        padding: 18px;
+        border-radius: 20px;
+        border: 1px solid rgba(115, 81, 56, 0.18);
+        background: rgba(255, 251, 245, 0.82);
+      }
+      .step-grid, .proof-grid, .comparison-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 14px;
+      }
+      .industry-tabs {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+      .industry-pill {
+        padding: 10px 14px;
+        border-radius: 999px;
+        border: 1px solid rgba(115, 81, 56, 0.22);
+        background: rgba(255, 250, 243, 0.92);
+      }
+      .faq-list {
+        display: grid;
+        gap: 12px;
+      }
+      .faq-item {
+        padding: 18px;
+      }
+      .cta-form {
+        display: grid;
+        gap: 14px;
+      }
+      .cta-form .grid.two {
+        gap: 14px;
+      }
       .table-note {
         margin-top: -6px;
         margin-bottom: 16px;
@@ -502,6 +785,7 @@ function renderPage(title: string, content: string): string {
         header, main { padding: 18px; }
         .masthead, section, .card, form { padding: 18px; }
         .split-callout { grid-template-columns: 1fr; }
+        .public-hero { grid-template-columns: 1fr; }
         h1 { font-size: 2.4rem; }
       }
     </style>
@@ -543,33 +827,11 @@ function joinLines(values: string[]): string {
   return values.map((value) => escapeHtml(value)).join("<br />");
 }
 
-function renderAccountList(accounts: Account[]): string {
+function renderAccountCreateForm(): string {
   return `
     <section>
-      <h2>Configured Accounts</h2>
-      <table>
-        <thead>
-          <tr>
-            <th>Account</th>
-            <th>Timezone</th>
-            <th>Primary Phone</th>
-            <th>Escalation</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${accounts
-            .map(
-              (account) => `
-                <tr>
-                  <td><a href="/accounts/${encodeURIComponent(account.id)}">${escapeHtml(account.name)}</a></td>
-                  <td>${escapeHtml(account.timezone)}</td>
-                  <td>${escapeHtml(account.primaryPhoneNumber)}</td>
-                  <td>${escapeHtml(account.emergencyEscalationPhone)}</td>
-                </tr>`,
-            )
-            .join("")}
-        </tbody>
-      </table>
+      <h2>Create New Account</h2>
+      <p>Keep creation separate from editing so operators can set up a pilot account without competing with the existing account list.</p>
     </section>
     <form method="post" action="/accounts">
       <h2>Create pilot account</h2>
@@ -583,16 +845,37 @@ function renderAccountList(accounts: Account[]): string {
           <input name="name" placeholder="Second Pilot HVAC" required />
         </label>
         <label>
+          Account slug
+          <input name="slug" placeholder="pilot-hvac" required />
+        </label>
+        <label>
+          Public host
+          <input name="publicHost" placeholder="pilot-hvac.voice.example.com" />
+        </label>
+        <label>
+          Brand name
+          <input name="brandName" placeholder="Pilot HVAC" />
+        </label>
+        <label>
           Timezone
           <input name="timezone" value="America/Chicago" required />
+          <span class="muted">Use the dispatcher timezone, for example <code>America/Chicago</code>.</span>
         </label>
         <label>
           Primary phone number
           <input name="primaryPhoneNumber" placeholder="+15551234567" required />
+          <span class="muted">Store numbers in E.164 format so routing and SMS stay consistent.</span>
         </label>
         <label>
           Emergency escalation phone
           <input name="emergencyEscalationPhone" placeholder="+15557654321" required />
+        </label>
+        <label>
+          Status
+          <select name="status">
+            <option value="active" selected>active</option>
+            <option value="inactive">inactive</option>
+          </select>
         </label>
         <label>
           SMS acknowledgement template
@@ -601,6 +884,11 @@ function renderAccountList(accounts: Account[]): string {
         <label>
           Consent script
           <textarea name="consentScript" required>This call may be recorded and transcribed to help us schedule your callback.</textarea>
+          <span class="muted">Explain recording and transcript use before live calls begin.</span>
+        </label>
+        <label>
+          Brand theme JSON
+          <textarea name="brandTheme">{}</textarea>
         </label>
         <label>
           <input name="overflowModeEnabled" type="checkbox" checked />
@@ -615,13 +903,73 @@ function renderAccountList(accounts: Account[]): string {
     </form>`;
 }
 
+function renderAccountList(accounts: Account[], routingRulesById: Map<string, RoutingRule>): string {
+  return `
+    <section class="page-intro">
+      <div class="title-row">
+        <div>
+          <h2>Accounts</h2>
+          <p>List, filter, and review launch readiness here. Create a new account from its own setup screen.</p>
+        </div>
+        <div class="nav-actions">
+          <a class="button primary" href="/accounts/new">New account</a>
+        </div>
+      </div>
+      <div class="filter-row">
+        <span class="pill pill-neutral">All</span>
+        <span class="pill pill-warn">Setup incomplete</span>
+        <span class="pill pill-accent">Active</span>
+      </div>
+    </section>
+    <section>
+      <table>
+        <thead>
+          <tr>
+            <th>Account</th>
+            <th>Timezone</th>
+            <th>Primary Number</th>
+            <th>Routing Status</th>
+            <th>Last Updated</th>
+            <th>Launch Readiness</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${accounts
+            .map((account) => {
+              const routingRule = routingRulesById.get(account.id);
+              const readiness = computeLaunchReadiness(account, routingRule);
+
+              return `
+                <tr>
+                  <td>${renderEntityLink(`/accounts/${encodeURIComponent(account.id)}`, account.name, {
+                    eyebrow: account.status,
+                    sublabel: account.publicHost ?? account.slug,
+                  })}</td>
+                  <td>${escapeHtml(account.timezone)}</td>
+                  <td>${escapeHtml(account.primaryPhoneNumber)}</td>
+                  <td>${routingRule ? renderStatePill(routingRule.defaultDisposition, "accent") : renderStatePill("Missing", "warn")}</td>
+                  <td>${escapeHtml(formatTimestamp(account.updatedAt))}</td>
+                  <td>${escapeHtml(readinessSummary(readiness))}</td>
+                </tr>`;
+            })
+            .join("")}
+        </tbody>
+      </table>
+    </section>`;
+}
+
 function renderAccountDetail(account: Account, routingRule?: RoutingRule): string {
+  const readiness = computeLaunchReadiness(account, routingRule);
   return `
     <div class="grid two">
       <section>
         <h2>Account Config</h2>
         ${renderDefinitionList([
           { label: "Account name", value: escapeHtml(account.name) },
+          { label: "Route slug", value: `<code>${escapeHtml(account.slug)}</code>` },
+          { label: "Public host", value: escapeHtml(account.publicHost ?? "Not configured") },
+          { label: "Status", value: escapeHtml(account.status) },
+          { label: "Brand name", value: escapeHtml(account.brandName ?? account.name) },
           { label: "Timezone", value: escapeHtml(account.timezone) },
           { label: "Primary phone", value: escapeHtml(account.primaryPhoneNumber) },
           { label: "Overflow mode", value: account.overflowModeEnabled ? "Enabled" : "Disabled" },
@@ -633,6 +981,8 @@ function renderAccountDetail(account: Account, routingRule?: RoutingRule): strin
         <h2>Operator Messaging</h2>
         <p><strong>SMS acknowledgement</strong><br />${escapeHtml(account.smsAckTemplate)}</p>
         <p><strong>Consent script</strong><br />${escapeHtml(account.consentScript)}</p>
+        <h3>Launch readiness</h3>
+        ${renderChecklist(readiness)}
         ${
           routingRule
             ? `<p><strong>Routing version</strong><br />${escapeHtml(routingRule.versionId)} deployed ${escapeHtml(routingRule.deployedAt)}</p>`
@@ -649,16 +999,37 @@ function renderAccountDetail(account: Account, routingRule?: RoutingRule): strin
           <input name="name" value="${encodeFormValue(account.name)}" required />
         </label>
         <label>
+          Account slug
+          <input name="slug" value="${encodeFormValue(account.slug)}" required />
+        </label>
+        <label>
+          Public host
+          <input name="publicHost" value="${encodeFormValue(account.publicHost ?? "")}" />
+        </label>
+        <label>
+          Brand name
+          <input name="brandName" value="${encodeFormValue(account.brandName ?? "")}" />
+        </label>
+        <label>
           Timezone
           <input name="timezone" value="${encodeFormValue(account.timezone)}" required />
+          <span class="muted">Use the account's operating timezone before launch.</span>
         </label>
         <label>
           Primary phone number
           <input name="primaryPhoneNumber" value="${encodeFormValue(account.primaryPhoneNumber)}" required />
+          <span class="muted">Use E.164 formatting so call routing and SMS copy stay predictable.</span>
         </label>
         <label>
           Emergency escalation phone
           <input name="emergencyEscalationPhone" value="${encodeFormValue(account.emergencyEscalationPhone)}" required />
+        </label>
+        <label>
+          Status
+          <select name="status">
+            <option value="active" ${account.status === "active" ? "selected" : ""}>active</option>
+            <option value="inactive" ${account.status === "inactive" ? "selected" : ""}>inactive</option>
+          </select>
         </label>
         <label>
           SMS acknowledgement template
@@ -667,6 +1038,11 @@ function renderAccountDetail(account: Account, routingRule?: RoutingRule): strin
         <label>
           Consent script
           <textarea name="consentScript" required>${encodeFormValue(account.consentScript)}</textarea>
+          <span class="muted">Keep the consent language explicit for recording and transcript handling.</span>
+        </label>
+        <label>
+          Brand theme JSON
+          <textarea name="brandTheme">${encodeFormValue(JSON.stringify(account.brandTheme ?? {}, null, 2))}</textarea>
         </label>
         <label>
           <input name="overflowModeEnabled" type="checkbox" ${account.overflowModeEnabled ? "checked" : ""} />
@@ -760,6 +1136,310 @@ function renderRoutingRule(account: Account, routingRule?: RoutingRule): string 
       </div>
       <button class="button primary" type="submit">Save routing rules</button>
     </form>`;
+}
+
+function renderPublicSite(account: Account): string {
+  const brandPrimary = account.brandTheme?.accent ?? "#8e2f1c";
+  const brandSecondary = account.brandTheme?.secondary ?? "#465445";
+  const surfaceBase = account.brandTheme?.surface ?? "#fffdf9";
+  const industryLabel = account.brandName?.includes("HVAC")
+    ? "HVAC"
+    : account.brandName?.includes("Electric")
+      ? "Electrical"
+      : "Home services";
+
+  return `
+    <div class="public-shell" style="--accent:${escapeHtml(brandPrimary)};--accent-strong:${escapeHtml(brandPrimary)};--olive:${escapeHtml(brandSecondary)};--panel-strong:${escapeHtml(surfaceBase)};">
+      <header>
+        <div class="public-nav">
+          <div class="eyebrow">${escapeHtml(industryLabel)} AI Reception</div>
+          <nav>
+            <a href="#how-it-works">How It Works</a>
+            <a href="#industries">Industries</a>
+            <a href="#integrations">Integrations</a>
+            <a href="#proof">Proof</a>
+            <a href="#faq">FAQ</a>
+            <a class="button primary" href="#book-demo">Book a demo</a>
+          </nav>
+        </div>
+      </header>
+      <main class="stack">
+        <section class="public-hero">
+          <div class="stack">
+            <span class="eyebrow">After-hours coverage that sounds operational</span>
+            <h1>Never miss the service calls that turn into revenue.</h1>
+            <p class="lede">${escapeHtml(account.brandName ?? account.name)} answers overflow and after-hours calls, captures structured lead data, routes urgent jobs, and hands everything into the team already running dispatch.</p>
+            <div class="action-row">
+              <a class="button primary" href="#book-demo">Book a demo</a>
+              <a class="button secondary" href="#proof">See how a callback flow works</a>
+            </div>
+            <div class="logo-strip">
+              <div><strong>Answers overflow</strong><p>Captures every caller after hours or when the line is slammed.</p></div>
+              <div><strong>Routes urgent calls</strong><p>Escalates high-risk issues with the right disposition instead of generic voicemail.</p></div>
+              <div><strong>Creates usable records</strong><p>Leaves the dispatcher with structured service, urgency, and callback context.</p></div>
+            </div>
+          </div>
+          <div class="stack">
+            <div class="proof-card">
+              <h2>Live proof module</h2>
+              <p class="muted">Example timeline for the current tenant surface.</p>
+              <ol class="timeline">
+                <li><strong>8:42 PM</strong><span>Caller reports no heat for a family home.</span></li>
+                <li><strong>8:43 PM</strong><span>AI confirms address, urgency, and callback number.</span></li>
+                <li><strong>8:43 PM</strong><span>Urgency tagged high, callback task created, on-call SMS sent.</span></li>
+                <li><strong>8:44 PM</strong><span>CRM sync confirms lead creation for next-step dispatch.</span></li>
+              </ol>
+            </div>
+            <div class="timeline-card">
+              <h2>Callback outcome</h2>
+              <p><strong>Status:</strong> Technician dispatched within 11 minutes.</p>
+              <p><strong>Captured:</strong> service need, urgency, location, callback window, consent state.</p>
+              <p><strong>Integration:</strong> Job synced cleanly to downstream ops tooling.</p>
+            </div>
+          </div>
+        </section>
+        <section id="how-it-works" class="stack">
+          <h2>How it works</h2>
+          <div class="step-grid">
+            <article><h3>Answer</h3><p>Pick up overflow and after-hours calls with brand-safe language and consent copy.</p></article>
+            <article><h3>Qualify</h3><p>Capture job type, urgency, location, and callback details in a repeatable structure.</p></article>
+            <article><h3>Decide</h3><p>Apply routing rules for emergency escalation, callback creation, or booking handoff.</p></article>
+            <article><h3>Hand off</h3><p>Deliver a usable callback record and sync status instead of another voicemail transcript.</p></article>
+          </div>
+        </section>
+        <section id="industries" class="industry-band stack">
+          <h2>Built for real service workflows</h2>
+          <div class="industry-tabs">
+            <span class="industry-pill">Plumbing: leak triage and water shutoff cues</span>
+            <span class="industry-pill">HVAC: no-heat and no-cooling urgency routing</span>
+            <span class="industry-pill">Electrical: outage and sparking escalation paths</span>
+            <span class="industry-pill">General home services: overflow capture and callback scheduling</span>
+          </div>
+          <p>The layout stays fixed. Tenant-specific proof, accent color, and brand language vary through account tokens instead of bespoke page rebuilds.</p>
+        </section>
+        <section id="integrations" class="stack">
+          <h2>Practical workflow proof</h2>
+          <div class="proof-grid">
+            <article><h3>Captured caller need</h3><p>Burst pipe in crawlspace, customer requesting callback before dispatch.</p></article>
+            <article><h3>Urgency tagging</h3><p>High urgency based on flooding keywords and after-hours window.</p></article>
+            <article><h3>Callback creation</h3><p>Owner-ready follow-up task with phone, service request, due time, and notes.</p></article>
+            <article><h3>CRM / job sync</h3><p>Integration status is explicit so the operator knows whether to retry or move on.</p></article>
+          </div>
+        </section>
+        <section id="proof" class="stack">
+          <h2>Before and after</h2>
+          <div class="comparison-grid">
+            <article><h3>Before</h3><p>Missed calls, generic voicemail, and dispatchers piecing together urgency from fragments.</p></article>
+            <article><h3>After</h3><p>Every captured call leaves a structured trail: transcript, disposition, callback, and sync outcome.</p></article>
+          </div>
+        </section>
+        <section id="faq" class="stack">
+          <h2>FAQ</h2>
+          <div class="faq-list">
+            <div class="faq-item"><strong>Does this replace my dispatch software?</strong><p>No. It sits in front of the stack you already use and pushes cleaner intake into it.</p></div>
+            <div class="faq-item"><strong>Can it vary by trade?</strong><p>Yes. The same layout supports trade-specific proof, copy, accent color, and examples through tenant tokens.</p></div>
+            <div class="faq-item"><strong>What does the team see internally?</strong><p>An operator console for calls, callbacks, sync failures, and launch readiness instead of raw logs.</p></div>
+          </div>
+        </section>
+        <form id="book-demo" class="cta-form">
+          <h2>Book a demo</h2>
+          <div class="grid two">
+            <label>Name<input name="name" placeholder="Alex Rivera" /></label>
+            <label>Company<input name="company" placeholder="Northside Service Co." /></label>
+            <label>Work email<input name="email" type="email" placeholder="alex@northside.example" /></label>
+            <label>Phone (optional)<input name="phone" placeholder="+15551234567" /></label>
+          </div>
+          <div class="action-row">
+            <button class="button primary" type="submit">Request demo</button>
+            <span class="muted">Current tenant route: ${account.publicHost ? escapeHtml(account.publicHost) : `/sites/${escapeHtml(account.slug)}`}</span>
+          </div>
+        </form>
+      </main>
+    </div>`;
+}
+
+function renderTenantPicker(accounts: Account[], viewerEmail: string): string {
+  return `
+    <section>
+      <h1>Select account</h1>
+      <p>Signed in as <strong>${escapeHtml(viewerEmail)}</strong>. Choose the tenant admin surface to open.</p>
+      <ul>
+        ${accounts
+          .map(
+            (account) =>
+              `<li><a href="/app/${encodeURIComponent(account.slug)}">${escapeHtml(account.brandName ?? account.name)}</a> <code>${escapeHtml(account.slug)}</code></li>`,
+          )
+          .join("")}
+      </ul>
+    </section>`;
+}
+
+function renderTenantAdminHome(account: Account): string {
+  return `
+    <section class="banner">
+      <p class="eyebrow">Tenant Admin</p>
+      <h1>${escapeHtml(account.brandName ?? account.name)}</h1>
+      <p>Admin routing is now anchored on <code>/app/${escapeHtml(account.slug)}</code>.</p>
+    </section>
+    <section>
+      <div class="actions">
+        <a class="button primary" href="/app/${encodeURIComponent(account.slug)}/accounts">Account config</a>
+        <a class="button secondary" href="/app/${encodeURIComponent(account.slug)}/routing">Routing config</a>
+        <a class="button secondary" href="/app/${encodeURIComponent(account.slug)}/calls">Calls</a>
+        <a class="button secondary" href="/app/${encodeURIComponent(account.slug)}/callbacks">Callbacks</a>
+        <a class="button secondary" href="/app/${encodeURIComponent(account.slug)}/sync-failures">Sync failures</a>
+      </div>
+    </section>`;
+}
+
+function renderAccessPending(viewerEmail: string): string {
+  return `
+    <section>
+      <h1>Access pending</h1>
+      <p>No active tenant memberships were found for <strong>${escapeHtml(viewerEmail)}</strong>.</p>
+      <p>Contact the operator who manages account memberships before retrying login.</p>
+    </section>`;
+}
+
+function renderAuditActivity(entries: ReturnType<AdminStore["listAuditEntries"]>): string {
+  if (entries.length === 0) {
+    return renderEmptyState("No recent changes", "Activity will appear here as operators update accounts, routing, callbacks, and sync exceptions.");
+  }
+
+  return `
+    <ul class="activity-list">
+      ${entries
+        .map(
+          (entry) => `
+            <li>
+              <strong>${escapeHtml(entry.action.replaceAll("_", " "))}</strong>
+              <p>${escapeHtml(entry.entityType.replaceAll("_", " "))} ${escapeHtml(entry.entityId)}</p>
+              <span class="entity-sublabel">${escapeHtml(formatTimestamp(entry.at))}</span>
+            </li>`,
+        )
+        .join("")}
+    </ul>`;
+}
+
+function renderAdminOverview(
+  config: AppConfig,
+  accounts: Account[],
+  calls: CallSession[],
+  callbacks: CallbackTask[],
+  syncFailures: SyncFailure[],
+  auditEntries: ReturnType<AdminStore["listAuditEntries"]>,
+): string {
+  const callsNeedingReview = calls.filter((call) => call.requiresHumanReview);
+  const dueSoonCallbacks = callbacks.filter((task) => task.status !== "resolved" && task.status !== "closed_lost").slice(0, 3);
+  const pendingFailures = syncFailures.filter((failure) => failure.status !== "resolved").slice(0, 3);
+
+  return `
+    <div class="overview-shell">
+      <section class="banner">
+        <div class="title-row">
+          <div>
+            <h2>What needs attention right now?</h2>
+            <p>Environment ${renderStatePill(config.SENTRY_ENVIRONMENT, "neutral")} last refreshed ${escapeHtml(formatTimestamp(new Date().toISOString()))}</p>
+          </div>
+          <div class="nav-actions">
+            <a class="button secondary" href="/calls">Open call review</a>
+            <a class="button secondary" href="/callbacks">Open callback queue</a>
+            <a class="button secondary" href="/sync-failures">Open sync failures</a>
+          </div>
+        </div>
+      </section>
+      <section>
+        <h2>Needs attention now</h2>
+        <div class="attention-list">
+          ${
+            callsNeedingReview.length > 0
+              ? callsNeedingReview
+                  .slice(0, 3)
+                  .map(
+                    (call) => `
+                      <div class="attention-card">
+                        <h3>Call review required</h3>
+                        <p>${escapeHtml(call.from ?? "Unknown caller")} on ${escapeHtml(formatTimestamp(call.startedAt))}</p>
+                        <div class="action-row">
+                          ${renderStatePill(`Confidence ${call.confidenceState ?? "unknown"}`, "warn")}
+                          <a class="button primary" href="/calls/${encodeURIComponent(call.callSid)}">Review call</a>
+                        </div>
+                      </div>`,
+                  )
+                  .join("")
+              : renderEmptyState("No flagged calls", "Calls needing operator review will be elevated here first.")
+          }
+          ${
+            dueSoonCallbacks.length > 0
+              ? dueSoonCallbacks
+                  .map(
+                    (task) => `
+                      <div class="attention-card">
+                        <h3>Callback due soon</h3>
+                        <p>${escapeHtml(task.customerName)} needs ${escapeHtml(task.requestedService)} follow-up by ${escapeHtml(formatTimestamp(task.dueAt))}.</p>
+                        <div class="action-row">
+                          ${renderStatePill(task.status, "accent")}
+                          <a class="button primary" href="/callbacks">Open callback</a>
+                        </div>
+                      </div>`,
+                  )
+                  .join("")
+              : ""
+          }
+          ${
+            pendingFailures.length > 0
+              ? pendingFailures
+                  .map(
+                    (failure) => `
+                      <div class="attention-card">
+                        <h3>Sync retry needed</h3>
+                        <p>${escapeHtml(failure.targetSystem)} failed with ${escapeHtml(failure.failureReason)}.</p>
+                        <div class="action-row">
+                          ${renderStatePill(failure.status, failure.status === "pending" ? "danger" : "warn")}
+                          <a class="button primary" href="/sync-failures">Retry investigation</a>
+                        </div>
+                      </div>`,
+                  )
+                  .join("")
+              : ""
+          }
+        </div>
+      </section>
+      <section>
+        <h2>Health summary</h2>
+        <div class="metric-grid">
+          <div class="metric-card"><p class="hero-label">Active accounts</p><strong>${accounts.filter((account) => account.status === "active").length}</strong></div>
+          <div class="metric-card"><p class="hero-label">Calls today</p><strong>${calls.length}</strong></div>
+          <div class="metric-card"><p class="hero-label">Open callbacks</p><strong>${callbacks.filter((task) => task.status !== "resolved" && task.status !== "closed_lost").length}</strong></div>
+          <div class="metric-card"><p class="hero-label">Open sync failures</p><strong>${syncFailures.filter((failure) => failure.status !== "resolved").length}</strong></div>
+        </div>
+      </section>
+      <section>
+        <h2>Recent changes</h2>
+        ${renderAuditActivity(auditEntries)}
+      </section>
+    </div>`;
+}
+
+function scopeTenantMarkup(markup: string, account: Account): string {
+  const accountId = encodeURIComponent(account.id);
+  const accountSlug = encodeURIComponent(account.slug);
+
+  return markup
+    .replaceAll('href="/internal/admin"', `href="/app/${accountSlug}"`)
+    .replaceAll('href="/accounts"', `href="/app/${accountSlug}/accounts"`)
+    .replaceAll('href="/calls"', `href="/app/${accountSlug}/calls"`)
+    .replaceAll('href="/callbacks"', `href="/app/${accountSlug}/callbacks"`)
+    .replaceAll('href="/sync-failures"', `href="/app/${accountSlug}/sync-failures"`)
+    .replaceAll(`href="/accounts/${accountId}/routing"`, `href="/app/${accountSlug}/routing"`)
+    .replaceAll(`href="/accounts/${accountId}"`, `href="/app/${accountSlug}/accounts"`)
+    .replaceAll('action="/accounts"', `action="/app/${accountSlug}/accounts"`)
+    .replaceAll(`action="/accounts/${accountId}/routing"`, `action="/app/${accountSlug}/routing"`)
+    .replaceAll(`action="/accounts/${accountId}"`, `action="/app/${accountSlug}/accounts"`)
+    .replaceAll('href="/accounts/new"', `href="/app/${accountSlug}/accounts"`)
+    .replaceAll('href="/calls/', `href="/app/${accountSlug}/calls/`)
+    .replaceAll('action="/callbacks/', `action="/app/${accountSlug}/callbacks/`)
+    .replaceAll('action="/sync-failures/', `action="/app/${accountSlug}/sync-failures/`);
 }
 
 function renderCallList(calls: CallSession[], accountsById: Map<string, Account>): string {
@@ -1125,6 +1805,14 @@ function seedAdminStore(adminStore: AdminStore, config: AppConfig): void {
   adminStore.seedAccount({
     id: config.DEFAULT_ACCOUNT_ID,
     name: "Pilot Plumbing",
+    slug: "pilot-plumbing",
+    publicHost: "pilot-plumbing.voice.example.com",
+    status: "active",
+    brandName: "Pilot Plumbing",
+    brandTheme: {
+      accent: "#8e2f1c",
+      surface: "#fffdf9",
+    },
     timezone: "America/Chicago",
     primaryPhoneNumber: "+15551230000",
     overflowModeEnabled: true,
@@ -1132,6 +1820,14 @@ function seedAdminStore(adminStore: AdminStore, config: AppConfig): void {
     emergencyEscalationPhone: "+15559870000",
     smsAckTemplate: "Thanks for calling Pilot Plumbing. We logged your request and an on-call tech will call back soon.",
     consentScript: config.TWILIO_RECORDING_CONSENT_LINE,
+  });
+
+  adminStore.seedUserMembership({
+    userId: "user-pilot-admin",
+    accountId: config.DEFAULT_ACCOUNT_ID,
+    emailNormalized: "ops@pilotplumbing.example",
+    role: "admin",
+    isDefault: true,
   });
 
   if (adminStore.listCallbackTasks().length === 0) {
@@ -1164,6 +1860,59 @@ function seedAdminStore(adminStore: AdminStore, config: AppConfig): void {
   }
 }
 
+function getViewer(request: FastifyRequest): { userId?: string; email?: string } {
+  const userId = typeof request.headers["x-viewer-user-id"] === "string" ? request.headers["x-viewer-user-id"] : undefined;
+  const email = typeof request.headers["x-viewer-email"] === "string" ? request.headers["x-viewer-email"] : undefined;
+  return {
+    userId,
+    email: email ? normalizeEmail(email) : undefined,
+  };
+}
+
+function findScopedCall(store: CallSessionStore, accountId: string, callSid: string): CallSession | undefined {
+  const call = store.get(callSid);
+  return call?.accountId === accountId ? call : undefined;
+}
+
+function findScopedCallback(adminStore: AdminStore, accountId: string, callbackId: string): CallbackTask | undefined {
+  return adminStore.listCallbackTasks().find((task) => task.id === callbackId && task.accountId === accountId);
+}
+
+function findScopedSyncFailure(adminStore: AdminStore, accountId: string, syncFailureId: string): SyncFailure | undefined {
+  return adminStore.listSyncFailures().find((failure) => failure.id === syncFailureId && failure.accountId === accountId);
+}
+
+function resolveLogin(adminStore: AdminStore, input: { userId: string; email: string; lastAccountSlug?: string }) {
+  const memberships = adminStore.listMembershipsForViewer(input.userId, input.email);
+
+  if (memberships.length === 0) {
+    return {
+      outcome: "access_pending" as const,
+      location: "/login/access-pending",
+      memberships: [],
+    };
+  }
+
+  const lastUsed = input.lastAccountSlug
+    ? memberships.find((membership) => membership.account.slug === input.lastAccountSlug)
+    : undefined;
+  const chosenMembership = lastUsed ?? memberships.find((membership) => membership.isDefault) ?? memberships[0];
+
+  if (memberships.length === 1 || lastUsed || chosenMembership.isDefault) {
+    return {
+      outcome: "redirect" as const,
+      location: `/app/${encodeURIComponent(chosenMembership.account.slug)}`,
+      memberships,
+    };
+  }
+
+  return {
+    outcome: "select_account" as const,
+    location: "/app/select-account",
+    memberships,
+  };
+}
+
 export function buildApp(
   config: AppConfig,
   dependencies: {
@@ -1190,6 +1939,493 @@ export function buildApp(
   app.register(websocket);
 
   app.get("/health", async () => ({ ok: true }));
+
+  const requireTenantAccess = async (request: FastifyRequest, reply: FastifyReply) => {
+    const viewer = getViewer(request);
+    if (!viewer.userId || !viewer.email) {
+      reply.code(303).header("location", "/login").send();
+      return undefined;
+    }
+
+    const { accountSlug } = request.params as { accountSlug: string };
+    const account = adminStore.getAccountBySlug(accountSlug);
+    if (!account || account.status !== "active") {
+      reply.code(404).send({ error: "Account not found" });
+      return undefined;
+    }
+
+    const memberships = adminStore.listMembershipsForViewer(viewer.userId, viewer.email);
+    if (!memberships.some((membership) => membership.account.id === account.id)) {
+      reply.code(403).send({ error: "Forbidden for tenant" });
+      return undefined;
+    }
+
+    return { viewer, account };
+  };
+
+  app.post("/api/login/resolve", async (request, reply) => {
+    const parsed = loginResolutionSchema.safeParse(request.body);
+    if (!parsed.success) {
+      reply.code(400).send({ error: parsed.error.flatten() });
+      return;
+    }
+
+    const resolution = resolveLogin(adminStore, parsed.data);
+    reply.send({
+      outcome: resolution.outcome,
+      location: resolution.location,
+      accounts: resolution.memberships.map((membership) => ({
+        id: membership.account.id,
+        slug: membership.account.slug,
+        name: membership.account.name,
+        brandName: membership.account.brandName ?? membership.account.name,
+        role: membership.role,
+        isDefault: membership.isDefault,
+      })),
+    });
+  });
+
+  app.get("/api/public/resolve", async (request, reply) => {
+    const query = request.query as { host?: string; accountSlug?: string };
+    const account =
+      (query.host ? adminStore.getAccountByPublicHost(normalizeHost(query.host)) : undefined) ??
+      (query.accountSlug ? adminStore.getAccountBySlug(query.accountSlug) : undefined);
+
+    if (!account || account.status !== "active") {
+      reply.code(404).send({ error: "Tenant not found" });
+      return;
+    }
+
+    reply.send({
+      accountId: account.id,
+      accountSlug: account.slug,
+      brandName: account.brandName ?? account.name,
+      source: query.host ? "host" : "path",
+    });
+  });
+
+  app.get("/login", async (_request, reply) => {
+    reply.type("text/html").send(
+      renderPage(
+        "Login",
+        `
+          <section>
+            <h1>Login entry point</h1>
+            <p>Authentication is expected to land here, then resolve tenant access by normalized email.</p>
+          </section>`,
+      ),
+    );
+  });
+
+  app.get("/login/access-pending", async (request, reply) => {
+    const viewer = getViewer(request);
+    reply.type("text/html").send(renderPage("Access Pending", renderAccessPending(viewer.email ?? "unknown user")));
+  });
+
+  app.get("/", async (request, reply) => {
+    const hostHeader = typeof request.headers.host === "string" ? normalizeHost(request.headers.host) : undefined;
+    const hostAccount = hostHeader ? adminStore.getAccountByPublicHost(hostHeader) : undefined;
+    const fallbackAccount = hostAccount ?? adminStore.listAccounts().find((account) => account.status === "active");
+    if (!fallbackAccount) {
+      reply.code(404).send({ error: "No public tenant configured" });
+      return;
+    }
+
+    reply.type("text/html").send(renderPublicSite(fallbackAccount));
+  });
+
+  app.get("/sites/:accountSlug", async (request, reply) => {
+    const { accountSlug } = request.params as { accountSlug: string };
+    const account = adminStore.getAccountBySlug(accountSlug);
+    if (!account || account.status !== "active") {
+      reply.code(404).send({ error: "Tenant not found" });
+      return;
+    }
+
+    reply.type("text/html").send(renderPublicSite(account));
+  });
+
+  app.get("/app", async (request, reply) => {
+    const viewer = getViewer(request);
+    if (!viewer.userId || !viewer.email) {
+      reply.code(303).header("location", "/login").send();
+      return;
+    }
+
+    const resolution = resolveLogin(adminStore, { userId: viewer.userId, email: viewer.email });
+    reply.code(303).header("location", resolution.location).send();
+  });
+
+  app.get("/app/select-account", async (request, reply) => {
+    const viewer = getViewer(request);
+    if (!viewer.userId || !viewer.email) {
+      reply.code(303).header("location", "/login").send();
+      return;
+    }
+
+    const resolution = resolveLogin(adminStore, { userId: viewer.userId, email: viewer.email });
+    if (resolution.outcome === "access_pending") {
+      reply.code(303).header("location", resolution.location).send();
+      return;
+    }
+
+    reply.type("text/html").send(
+      renderPage(
+        "Select Account",
+        renderTenantPicker(
+          resolution.memberships.map((membership) => membership.account),
+          viewer.email,
+        ),
+      ),
+    );
+  });
+
+  app.get("/app/:accountSlug", async (request, reply) => {
+    const access = await requireTenantAccess(request, reply);
+    if (!access) {
+      return;
+    }
+
+    reply.type("text/html").send(renderPage(`${access.account.brandName ?? access.account.name} Admin`, renderTenantAdminHome(access.account)));
+  });
+
+  app.get("/api/app/:accountSlug/account", async (request, reply) => {
+    const access = await requireTenantAccess(request, reply);
+    if (!access) {
+      return;
+    }
+
+    reply.send(access.account);
+  });
+
+  app.patch("/api/app/:accountSlug/account", async (request, reply) => {
+    const access = await requireTenantAccess(request, reply);
+    if (!access) {
+      return;
+    }
+
+    const parsed = accountPatchSchema.safeParse(request.body);
+    if (!parsed.success) {
+      reply.code(400).send({ error: parsed.error.flatten() });
+      return;
+    }
+
+    const account = adminStore.updateAccount(access.account.id, parsed.data);
+    reply.send(account);
+  });
+
+  app.get("/api/app/:accountSlug/routing", async (request, reply) => {
+    const access = await requireTenantAccess(request, reply);
+    if (!access) {
+      return;
+    }
+
+    const routingRule = adminStore.getRoutingRule(access.account.id);
+    if (!routingRule) {
+      reply.code(404).send({ error: "Routing rule not found" });
+      return;
+    }
+
+    reply.send(routingRule);
+  });
+
+  app.patch("/api/app/:accountSlug/routing", async (request, reply) => {
+    const access = await requireTenantAccess(request, reply);
+    if (!access) {
+      return;
+    }
+
+    const parsed = routingPatchSchema.safeParse(request.body);
+    if (!parsed.success) {
+      reply.code(400).send({ error: parsed.error.flatten() });
+      return;
+    }
+
+    reply.send(adminStore.upsertRoutingRule(access.account.id, parsed.data));
+  });
+
+  app.get("/api/app/:accountSlug/calls", async (request, reply) => {
+    const access = await requireTenantAccess(request, reply);
+    if (!access) {
+      return;
+    }
+
+    reply.send({
+      calls: store.list().filter((call) => call.accountId === access.account.id),
+    });
+  });
+
+  app.get("/api/app/:accountSlug/calls/:callSid", async (request, reply) => {
+    const access = await requireTenantAccess(request, reply);
+    if (!access) {
+      return;
+    }
+
+    const { callSid } = request.params as { accountSlug: string; callSid: string };
+    const session = findScopedCall(store, access.account.id, callSid);
+    if (!session) {
+      reply.code(404).send({ error: "Call session not found" });
+      return;
+    }
+
+    reply.send(session);
+  });
+
+  app.get("/api/app/:accountSlug/callbacks", async (request, reply) => {
+    const access = await requireTenantAccess(request, reply);
+    if (!access) {
+      return;
+    }
+
+    reply.send({
+      callbacks: adminStore.listCallbackTasks().filter((task) => task.accountId === access.account.id),
+    });
+  });
+
+  app.patch("/api/app/:accountSlug/callbacks/:callbackId", async (request, reply) => {
+    const access = await requireTenantAccess(request, reply);
+    if (!access) {
+      return;
+    }
+
+    const { callbackId } = request.params as { accountSlug: string; callbackId: string };
+    if (!findScopedCallback(adminStore, access.account.id, callbackId)) {
+      reply.code(404).send({ error: "Callback task not found" });
+      return;
+    }
+
+    const parsed = callbackPatchSchema.safeParse(request.body);
+    if (!parsed.success) {
+      reply.code(400).send({ error: parsed.error.flatten() });
+      return;
+    }
+
+    reply.send(adminStore.updateCallbackTask(callbackId, parsed.data));
+  });
+
+  app.get("/api/app/:accountSlug/sync-failures", async (request, reply) => {
+    const access = await requireTenantAccess(request, reply);
+    if (!access) {
+      return;
+    }
+
+    reply.send({
+      syncFailures: adminStore.listSyncFailures().filter((failure) => failure.accountId === access.account.id),
+    });
+  });
+
+  app.post("/api/app/:accountSlug/sync-failures/:syncFailureId/retry", async (request, reply) => {
+    const access = await requireTenantAccess(request, reply);
+    if (!access) {
+      return;
+    }
+
+    const { syncFailureId } = request.params as { accountSlug: string; syncFailureId: string };
+    if (!findScopedSyncFailure(adminStore, access.account.id, syncFailureId)) {
+      reply.code(404).send({ error: "Sync failure not found" });
+      return;
+    }
+
+    reply.send(adminStore.retrySyncFailure(syncFailureId));
+  });
+
+  app.get("/app/:accountSlug/accounts", async (request, reply) => {
+    const access = await requireTenantAccess(request, reply);
+    if (!access) {
+      return;
+    }
+
+    reply
+      .type("text/html")
+      .send(scopeTenantMarkup(renderPage(`${access.account.name} Account`, renderAccountDetail(access.account, adminStore.getRoutingRule(access.account.id))), access.account));
+  });
+
+  app.post("/app/:accountSlug/accounts", async (request, reply) => {
+    const access = await requireTenantAccess(request, reply);
+    if (!access) {
+      return;
+    }
+
+    const body = request.body as HtmlFormBody;
+    const parsed = accountPatchSchema.safeParse({
+      name: body.name,
+      slug: body.slug,
+      publicHost: body.publicHost || undefined,
+      status: body.status,
+      brandName: body.brandName || undefined,
+      timezone: body.timezone,
+      primaryPhoneNumber: body.primaryPhoneNumber,
+      overflowModeEnabled: parseCheckbox(body.overflowModeEnabled),
+      afterHoursScheduleEnabled: parseCheckbox(body.afterHoursScheduleEnabled),
+      emergencyEscalationPhone: body.emergencyEscalationPhone,
+      smsAckTemplate: body.smsAckTemplate,
+      consentScript: body.consentScript,
+      brandTheme: parseBrandTheme(body.brandTheme),
+    });
+    if (!parsed.success) {
+      reply.code(400).send({ error: parsed.error.flatten() });
+      return;
+    }
+
+    const updatedAccount = adminStore.updateAccount(access.account.id, parsed.data);
+    reply.code(303).header("location", `/app/${encodeURIComponent(updatedAccount?.slug ?? access.account.slug)}/accounts`).send();
+  });
+
+  app.get("/app/:accountSlug/routing", async (request, reply) => {
+    const access = await requireTenantAccess(request, reply);
+    if (!access) {
+      return;
+    }
+
+    reply
+      .type("text/html")
+      .send(scopeTenantMarkup(renderPage(`${access.account.name} Routing`, renderRoutingRule(access.account, adminStore.getRoutingRule(access.account.id))), access.account));
+  });
+
+  app.post("/app/:accountSlug/routing", async (request, reply) => {
+    const access = await requireTenantAccess(request, reply);
+    if (!access) {
+      return;
+    }
+
+    const body = request.body as HtmlFormBody;
+    const parsed = routingPatchSchema.safeParse({
+      businessHours: parseBusinessHours(body),
+      overflowThresholds: {
+        maxActiveCalls: Number(body.maxActiveCalls ?? 0),
+        maxQueueDepth: Number(body.maxQueueDepth ?? 0),
+      },
+      serviceAreaZipCodes: parseLines(body.serviceAreaZipCodes),
+      supportedServiceTypes: parseLines(body.supportedServiceTypes),
+      emergencyKeywords: parseLines(body.emergencyKeywords),
+      unsupportedIntents: parseLines(body.unsupportedIntents),
+      defaultDisposition: body.defaultDisposition,
+      versionId: body.versionId,
+    });
+    if (!parsed.success) {
+      reply.code(400).send({ error: parsed.error.flatten() });
+      return;
+    }
+
+    adminStore.upsertRoutingRule(access.account.id, parsed.data);
+    reply.code(303).header("location", `/app/${encodeURIComponent(access.account.slug)}/routing`).send();
+  });
+
+  app.get("/app/:accountSlug/calls", async (request, reply) => {
+    const access = await requireTenantAccess(request, reply);
+    if (!access) {
+      return;
+    }
+
+    const scopedCalls = store.list().filter((call) => call.accountId === access.account.id);
+    reply
+      .type("text/html")
+      .send(scopeTenantMarkup(renderPage("Call Review", renderCallList(scopedCalls, new Map([[access.account.id, access.account]]))), access.account));
+  });
+
+  app.get("/app/:accountSlug/calls/:callSid", async (request, reply) => {
+    const access = await requireTenantAccess(request, reply);
+    if (!access) {
+      return;
+    }
+
+    const { callSid } = request.params as { accountSlug: string; callSid: string };
+    const session = findScopedCall(store, access.account.id, callSid);
+    if (!session) {
+      reply.code(404).send({ error: "Call session not found" });
+      return;
+    }
+
+    const callback = adminStore.listCallbackTasks().find((task) => task.callSid === callSid && task.accountId === access.account.id);
+    const syncFailures = adminStore.listSyncFailures().filter((failure) => failure.callSid === callSid && failure.accountId === access.account.id);
+    reply
+      .type("text/html")
+      .send(scopeTenantMarkup(renderPage(`Call ${callSid}`, renderCallDetail(session, access.account, adminStore.getRoutingRule(access.account.id), callback, syncFailures)), access.account));
+  });
+
+  app.get("/app/:accountSlug/callbacks", async (request, reply) => {
+    const access = await requireTenantAccess(request, reply);
+    if (!access) {
+      return;
+    }
+
+    const callbacks = adminStore.listCallbackTasks().filter((task) => task.accountId === access.account.id);
+    const calls = store.list().filter((call) => call.accountId === access.account.id);
+    reply
+      .type("text/html")
+      .send(scopeTenantMarkup(renderPage("Callback Queue", renderCallbacks(callbacks, new Map([[access.account.id, access.account]]), new Map(calls.map((call) => [call.callSid, call])))), access.account));
+  });
+
+  app.post("/app/:accountSlug/callbacks/:callbackId", async (request, reply) => {
+    const access = await requireTenantAccess(request, reply);
+    if (!access) {
+      return;
+    }
+
+    const { callbackId } = request.params as { accountSlug: string; callbackId: string };
+    if (!findScopedCallback(adminStore, access.account.id, callbackId)) {
+      reply.code(404).send({ error: "Callback task not found" });
+      return;
+    }
+
+    const body = request.body as HtmlFormBody;
+    const parsed = callbackPatchSchema.safeParse({
+      ownerName: body.ownerName,
+      status: body.status,
+      notes: body.notes,
+      dueAt: body.dueAt ? new Date(body.dueAt).toISOString() : undefined,
+    });
+    if (!parsed.success) {
+      reply.code(400).send({ error: parsed.error.flatten() });
+      return;
+    }
+
+    adminStore.updateCallbackTask(callbackId, parsed.data);
+    reply.code(303).header("location", `/app/${encodeURIComponent(access.account.slug)}/callbacks`).send();
+  });
+
+  app.get("/app/:accountSlug/sync-failures", async (request, reply) => {
+    const access = await requireTenantAccess(request, reply);
+    if (!access) {
+      return;
+    }
+
+    const failures = adminStore.listSyncFailures().filter((failure) => failure.accountId === access.account.id);
+    const calls = store.list().filter((call) => call.accountId === access.account.id);
+    reply
+      .type("text/html")
+      .send(scopeTenantMarkup(renderPage("Failed Sync Review", renderSyncFailures(failures, new Map([[access.account.id, access.account]]), new Map(calls.map((call) => [call.callSid, call])))), access.account));
+  });
+
+  app.post("/app/:accountSlug/sync-failures/:syncFailureId/actions", async (request, reply) => {
+    const access = await requireTenantAccess(request, reply);
+    if (!access) {
+      return;
+    }
+
+    const { syncFailureId } = request.params as { accountSlug: string; syncFailureId: string };
+    if (!findScopedSyncFailure(adminStore, access.account.id, syncFailureId)) {
+      reply.code(404).send({ error: "Sync failure not found" });
+      return;
+    }
+
+    const body = request.body as HtmlFormBody;
+    const parsed = syncFailureActionSchema.safeParse({
+      action: body.action,
+    });
+    if (!parsed.success) {
+      reply.code(400).send({ error: parsed.error.flatten() });
+      return;
+    }
+
+    if (parsed.data.action === "retry") {
+      adminStore.retrySyncFailure(syncFailureId);
+    } else {
+      adminStore.updateSyncFailureStatus(syncFailureId, parsed.data.action);
+    }
+
+    reply.code(303).header("location", `/app/${encodeURIComponent(access.account.slug)}/sync-failures`).send();
+  });
 
   app.post("/twilio/voice/inbound", async (request, reply) => {
     const body = request.body as Record<string, string | undefined>;
@@ -1399,6 +2635,10 @@ export function buildApp(
     const parsed = accountCreateSchema.safeParse({
       id: body.id,
       name: body.name,
+      slug: body.slug,
+      publicHost: body.publicHost || undefined,
+      status: body.status,
+      brandName: body.brandName || undefined,
       timezone: body.timezone,
       primaryPhoneNumber: body.primaryPhoneNumber,
       overflowModeEnabled: parseCheckbox(body.overflowModeEnabled),
@@ -1406,6 +2646,7 @@ export function buildApp(
       emergencyEscalationPhone: body.emergencyEscalationPhone,
       smsAckTemplate: body.smsAckTemplate,
       consentScript: body.consentScript,
+      brandTheme: parseBrandTheme(body.brandTheme),
     });
     if (!parsed.success) {
       reply.code(400).send({ error: parsed.error.flatten() });
@@ -1421,6 +2662,10 @@ export function buildApp(
     const body = request.body as HtmlFormBody;
     const parsed = accountPatchSchema.safeParse({
       name: body.name,
+      slug: body.slug,
+      publicHost: body.publicHost || undefined,
+      status: body.status,
+      brandName: body.brandName || undefined,
       timezone: body.timezone,
       primaryPhoneNumber: body.primaryPhoneNumber,
       overflowModeEnabled: parseCheckbox(body.overflowModeEnabled),
@@ -1428,6 +2673,7 @@ export function buildApp(
       emergencyEscalationPhone: body.emergencyEscalationPhone,
       smsAckTemplate: body.smsAckTemplate,
       consentScript: body.consentScript,
+      brandTheme: parseBrandTheme(body.brandTheme),
     });
     if (!parsed.success) {
       reply.code(400).send({ error: parsed.error.flatten() });
@@ -1525,47 +2771,26 @@ export function buildApp(
     const callbacks = adminStore.listCallbackTasks();
     const syncFailures = adminStore.listSyncFailures();
     const calls = store.list();
-    const accountsById = new Map(accounts.map((account) => [account.id, account]));
     reply
       .type("text/html")
-      .send(
-        renderPage(
-          "Pilot Operations Console",
-          `
-            <section class="banner">
-              <div class="hero-stats">
-                <div><p class="hero-label">Accounts</p><p class="hero-value">${accounts.length}</p></div>
-                <div><p class="hero-label">Calls</p><p class="hero-value">${calls.length}</p></div>
-                <div><p class="hero-label">Callbacks</p><p class="hero-value">${callbacks.length}</p></div>
-                <div><p class="hero-label">Sync Failures</p><p class="hero-value">${syncFailures.length}</p></div>
-              </div>
-            </section>
-            <div class="grid two">
-              <section>
-                <h2>Launch readiness</h2>
-                <p>Use this console to configure a pilot account, inspect call outcomes, and resolve callback or sync exceptions without database access.</p>
-                <ul>
-                  <li>${accounts.length} configured account(s)</li>
-                  <li>${calls.length} call record(s)</li>
-                  <li>${callbacks.length} callback task(s)</li>
-                  <li>${syncFailures.length} failed sync event(s)</li>
-                  <li>Sentry ${config.SENTRY_DSN ? `enabled for ${escapeHtml(config.SENTRY_ENVIRONMENT)}` : "not configured"}</li>
-                </ul>
-              </section>
-              <section>
-                <h2>Recent audit log</h2>
-                <pre>${escapeHtml(JSON.stringify(adminStore.listAuditEntries(), null, 2))}</pre>
-              </section>
-            </div>
-            ${renderAccountList(accounts)}
-            ${renderCallList(calls, accountsById)}
-          `,
-        ),
-      );
+      .send(renderPage("Pilot Operations Console", renderAdminOverview(config, accounts, calls, callbacks, syncFailures, adminStore.listAuditEntries())));
   });
 
   app.get("/accounts", async (_request, reply) => {
-    reply.type("text/html").send(renderPage("Accounts", renderAccountList(adminStore.listAccounts())));
+    const accounts = adminStore.listAccounts();
+    const routingRulesById = new Map(
+      accounts
+        .map((account) => {
+          const routingRule = adminStore.getRoutingRule(account.id);
+          return routingRule ? [account.id, routingRule] : undefined;
+        })
+        .filter((entry): entry is [string, RoutingRule] => entry !== undefined),
+    );
+    reply.type("text/html").send(renderPage("Accounts", renderAccountList(accounts, routingRulesById)));
+  });
+
+  app.get("/accounts/new", async (_request, reply) => {
+    reply.type("text/html").send(renderPage("New Account", renderAccountCreateForm()));
   });
 
   app.get("/accounts/:accountId", async (request, reply) => {

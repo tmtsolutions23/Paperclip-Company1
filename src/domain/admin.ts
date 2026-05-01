@@ -1,6 +1,11 @@
 export interface Account {
   id: string;
   name: string;
+  slug: string;
+  publicHost?: string;
+  status: "active" | "inactive";
+  brandName?: string;
+  brandTheme?: Record<string, string>;
   timezone: string;
   primaryPhoneNumber: string;
   overflowModeEnabled: boolean;
@@ -66,9 +71,20 @@ export interface SyncFailure {
 
 export interface AuditEntry {
   id: string;
-  entityType: "account" | "routing_rule" | "callback_task" | "sync_failure";
+  entityType: "account" | "routing_rule" | "callback_task" | "sync_failure" | "user_membership";
   entityId: string;
   action: string;
   at: string;
   detail?: Record<string, unknown>;
+}
+
+export interface UserMembership {
+  id: string;
+  userId: string;
+  accountId: string;
+  emailNormalized: string;
+  role: string;
+  isDefault: boolean;
+  createdAt: string;
+  updatedAt: string;
 }
