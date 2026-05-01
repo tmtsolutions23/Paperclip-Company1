@@ -414,7 +414,7 @@ describe("voice edge app", () => {
     expect(response.body).toContain("Request demo");
   });
 
-  it("separates account creation from the account list view", async () => {
+  it("redirects account list and creation routes to React cutover paths", async () => {
     const app = buildApp(config);
     apps.push(app);
 
@@ -423,19 +423,16 @@ describe("voice edge app", () => {
       url: "/accounts",
     });
 
-    expect(accountsPage.statusCode).toBe(200);
-    expect(accountsPage.body).toContain("New account");
-    expect(accountsPage.body).toContain("Launch Readiness");
-    expect(accountsPage.body).not.toContain("Create pilot account");
+    expect(accountsPage.statusCode).toBe(303);
+    expect(accountsPage.headers.location).toBe("/ui/accounts");
 
     const newAccountPage = await app.inject({
       method: "GET",
       url: "/accounts/new",
     });
 
-    expect(newAccountPage.statusCode).toBe(200);
-    expect(newAccountPage.body).toContain("Create pilot account");
-    expect(newAccountPage.body).toContain("Consent script");
+    expect(newAccountPage.statusCode).toBe(303);
+    expect(newAccountPage.headers.location).toBe("/ui/accounts/new");
   });
 
   it("redirects a single-membership user straight to the tenant admin path", async () => {

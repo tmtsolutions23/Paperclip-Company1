@@ -888,10 +888,11 @@ function renderReactShell(): string {
           e('div',{className:'card'},e('div',{className:'k'},'Calls'),e('div',{className:'v'},loading?'…':data.calls))
         )); }
       function Accounts(){ const {loading,data}=useJson('/api/accounts', (payload)=>payload.accounts ?? []); return e('div',null,e('h2',null,'Accounts'),loading?e('p',null,'Loading…'):e('table',null,e('thead',null,e('tr',null,e('th',null,'Name'),e('th',null,'Timezone'),e('th',null,'Phone'))),e('tbody',null,...data.map(a=>e('tr',null,e('td',null,a.name),e('td',null,a.timezone),e('td',null,a.primaryPhoneNumber))))));}
+      function AccountDetail({accountId}){ const {loading,data}=useObject('/api/accounts/'+accountId); return e('div',null,e('h2',null,'Account Detail'),loading?e('p',null,'Loading…'):e('div',{className:'card'},e('p',null,'Name: '+data.name),e('p',null,'Slug: '+data.slug),e('p',null,'Timezone: '+data.timezone),e('a',{href:'/ui/accounts'},'Back to accounts'))); }
       function Calls(){ const {loading,data}=useJson('/api/ui/calls'); return e('div',null,e('h2',null,'Calls'),loading?e('p',null,'Loading…'):e('table',null,e('thead',null,e('tr',null,e('th',null,'Call'),e('th',null,'Account'),e('th',null,'Status'),e('th',null,'Updated'))),e('tbody',null,...data.map(c=>e('tr',null,e('td',null,c.callSid),e('td',null,c.accountId),e('td',null,c.status),e('td',null,c.updatedAt)))))); }
       function Callbacks(){ const {loading,data}=useJson('/api/ui/callbacks'); return e('div',null,e('h2',null,'Callbacks'),loading?e('p',null,'Loading…'):e('div',{className:'grid'},...data.map(c=>e('div',{className:'card'},e('strong',null,c.ownerName ?? 'Unassigned'),e('p',null,c.status),e('p',null,c.notes ?? ''),e('a',{href:'/calls/'+c.callSid},'Open call'))))); }
       function Sync(){ const {loading,data}=useJson('/api/ui/sync-failures'); return e('div',null,e('h2',null,'Sync Failures'),loading?e('p',null,'Loading…'):e('div',{className:'grid'},...data.map(f=>e('div',{className:'card'},e('strong',null,f.provider),e('p',null,f.status),e('p',null,f.errorMessage),e('a',{href:'/calls/'+f.callSid},'Open call'))))); }
-      function App(){ const initial = location.pathname.split('/')[2] || 'overview'; const [route,setRoute]=React.useState(initial); const page = route==='accounts'?e(Accounts):route==='calls'?e(Calls):route==='callbacks'?e(Callbacks):route==='sync'?e(Sync):e(Overview); return e('div',{className:'shell'},e(Nav,{route,setRoute}),e('main',{className:'content'},page));}
+      function App(){ const parts=location.pathname.split('/').filter(Boolean); const initial = parts[1] || 'overview'; const [route,setRoute]=React.useState(initial); const accountId = parts[2]; const page = route==='accounts' && accountId ? e(AccountDetail,{accountId}) : route==='accounts'?e(Accounts):route==='calls'?e(Calls):route==='callbacks'?e(Callbacks):route==='sync'?e(Sync):e(Overview); return e('div',{className:'shell'},e(Nav,{route,setRoute}),e('main',{className:'content'},page));}
       createRoot(document.getElementById('root')).render(e(App));
     </script>
   </body>
@@ -2457,44 +2458,21 @@ export function buildApp(
   });
 
   app.get("/accounts", async (_request, reply) => {
-    const accounts = adminStore.listAccounts();
-    const routingRulesById = new Map(
-      accounts
-        .map((account) => {
-          const routingRule = adminStore.getRoutingRule(account.id);
-          return routingRule ? [account.id, routingRule] : undefined;
-        })
-        .filter((entry): entry is [string, RoutingRule] => entry !== undefined),
-    );
-    reply.type("text/html").send(renderPage("Accounts", renderAccountList(accounts, routingRulesById)));
+    reply.code(303).header("location", "/ui/accounts").send();
   });
 
   app.get("/accounts/new", async (_request, reply) => {
-    reply.type("text/html").send(renderPage("New Account", renderAccountCreateForm()));
+    reply.code(303).header("location", "/ui/accounts/new").send();
   });
 
   app.get("/accounts/:accountId", async (request, reply) => {
     const { accountId } = request.params as { accountId: string };
-    const account = adminStore.getAccount(accountId);
-    if (!account) {
-      reply.code(404).send({ error: "Account not found" });
-      return;
-    }
-    reply
-      .type("text/html")
-      .send(renderPage(account.name, renderAccountDetail(account, adminStore.getRoutingRule(accountId))));
+    reply.code(303).header("location", `/ui/accounts/${encodeURIComponent(accountId)}`).send();
   });
 
   app.get("/accounts/:accountId/routing", async (request, reply) => {
     const { accountId } = request.params as { accountId: string };
-    const account = adminStore.getAccount(accountId);
-    if (!account) {
-      reply.code(404).send({ error: "Account not found" });
-      return;
-    }
-    reply
-      .type("text/html")
-      .send(renderPage(`${account.name} Routing`, renderRoutingRule(account, adminStore.getRoutingRule(accountId))));
+    reply.code(303).header("location", `/ui/accounts/${encodeURIComponent(accountId)}`).send();
   });
 
   app.get("/calls", async (_request, reply) => {
