@@ -844,8 +844,6 @@ function renderPublicSite(account: Account): string {
         </form>
       </main>
     </div>`, { showMasthead: false });
-<<<<<<< HEAD
-=======
 }
 
 function renderReactShell(): string {
@@ -899,7 +897,6 @@ function renderReactShell(): string {
     </script>
   </body>
 </html>`;
->>>>>>> origin/codex/redesign-entire-app-ui/ux-rryi1c
 }
 
 function renderTenantPicker(accounts: Account[], viewerEmail: string): string {
@@ -2178,7 +2175,7 @@ export function buildApp(
   app.get("/api/ui/overview", async () => ({
     accounts: adminStore.listAccounts().length,
     calls: store.list().length,
-    callbacks: adminStore.listCallbacks().length,
+    callbacks: adminStore.listCallbackTasks().length,
     syncFailures: adminStore.listSyncFailures().length,
   }));
 
@@ -2186,7 +2183,7 @@ export function buildApp(
     store.list().map((session) => ({
       callSid: session.callSid,
       accountId: session.accountId,
-      status: session.status,
+      status: session.disposition,
       updatedAt: session.updatedAt,
     })),
   );
@@ -2206,9 +2203,9 @@ export function buildApp(
     adminStore.listSyncFailures().map((failure) => ({
       id: failure.id,
       callSid: failure.callSid,
-      provider: failure.provider,
+      provider: failure.targetSystem,
       status: failure.status,
-      errorMessage: failure.errorMessage,
+      errorMessage: failure.failureReason,
       createdAt: failure.createdAt,
     })),
   );
