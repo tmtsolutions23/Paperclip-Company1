@@ -844,6 +844,62 @@ function renderPublicSite(account: Account): string {
         </form>
       </main>
     </div>`, { showMasthead: false });
+<<<<<<< HEAD
+=======
+}
+
+function renderReactShell(): string {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Paperclip Ops UI</title>
+    <style>
+      :root { --bg:#111014; --panel:#1b1822; --ink:#f8f4f2; --muted:#baafb3; --line:#3a3242; --accent:#ff6b35; }
+      *{box-sizing:border-box} body{margin:0;font-family:"Spectral", Georgia, serif;background:radial-gradient(circle at top right,#302338,var(--bg) 50%);color:var(--ink)}
+      .shell{display:grid;grid-template-columns:280px 1fr;min-height:100vh}
+      .rail{border-right:1px solid var(--line);padding:24px;background:rgba(0,0,0,.2)}
+      .rail h1{font-size:1.2rem;letter-spacing:.08em;text-transform:uppercase}
+      .rail a{display:block;color:var(--muted);text-decoration:none;padding:10px 12px;border-radius:8px;margin-bottom:8px}
+      .rail a.active,.rail a:hover{background:#2a2432;color:var(--ink)}
+      .content{padding:28px}
+      .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}
+      .card{background:var(--panel);border:1px solid var(--line);padding:16px;border-radius:14px}
+      table{width:100%;border-collapse:collapse;background:var(--panel);border-radius:12px;overflow:hidden}
+      th,td{padding:10px;border-bottom:1px solid var(--line);text-align:left}
+      th{font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
+      .k{font-size:.8rem;color:var(--muted)} .v{font-size:1.8rem;color:var(--accent)}
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module">
+      import React from 'https://esm.sh/react@18.3.1';
+      import { createRoot } from 'https://esm.sh/react-dom@18.3.1/client';
+
+      const e = React.createElement;
+      function useJson(url, pick){ const [state,setState]=React.useState({loading:true,data:[]}); React.useEffect(()=>{fetch(url).then(r=>r.json()).then(data=>setState({loading:false,data:pick?pick(data):data}));},[url]); return state; }
+      function useObject(url){ const [state,setState]=React.useState({loading:true,data:null}); React.useEffect(()=>{fetch(url).then(r=>r.json()).then(data=>setState({loading:false,data}));},[url]); return state; }
+      function Nav({route,setRoute}){ const links=[['overview','Overview'],['accounts','Accounts'],['calls','Calls'],['callbacks','Callbacks'],['sync','Sync Failures']]; return e('aside',{className:'rail'},e('h1',null,'Operator Console'),...links.map(([id,label])=>e('a',{href:'/ui/'+id,className:route===id?'active':'',onClick:(ev)=>{ev.preventDefault();history.replaceState({},'', '/ui/'+id);setRoute(id);}},label))); }
+      function Overview(){ const {loading,data}=useObject('/api/ui/overview');
+        return e('div',null,e('h2',null,'Command Overview'),e('div',{className:'grid'},
+          e('div',{className:'card'},e('div',{className:'k'},'Accounts'),e('div',{className:'v'},loading?'…':data.accounts)),
+          e('div',{className:'card'},e('div',{className:'k'},'Callbacks'),e('div',{className:'v'},loading?'…':data.callbacks)),
+          e('div',{className:'card'},e('div',{className:'k'},'Sync Failures'),e('div',{className:'v'},loading?'…':data.syncFailures)),
+          e('div',{className:'card'},e('div',{className:'k'},'Calls'),e('div',{className:'v'},loading?'…':data.calls))
+        )); }
+      function Accounts(){ const {loading,data}=useJson('/api/accounts', (payload)=>payload.accounts ?? []); return e('div',null,e('h2',null,'Accounts'),loading?e('p',null,'Loading…'):e('table',null,e('thead',null,e('tr',null,e('th',null,'Name'),e('th',null,'Timezone'),e('th',null,'Phone'))),e('tbody',null,...data.map(a=>e('tr',null,e('td',null,a.name),e('td',null,a.timezone),e('td',null,a.primaryPhoneNumber))))));}
+      function AccountDetail({accountId}){ const {loading,data}=useObject('/api/accounts/'+accountId); return e('div',null,e('h2',null,'Account Detail'),loading?e('p',null,'Loading…'):e('div',{className:'card'},e('p',null,'Name: '+data.name),e('p',null,'Slug: '+data.slug),e('p',null,'Timezone: '+data.timezone),e('a',{href:'/ui/accounts'},'Back to accounts'))); }
+      function Calls(){ const {loading,data}=useJson('/api/ui/calls'); return e('div',null,e('h2',null,'Calls'),loading?e('p',null,'Loading…'):e('table',null,e('thead',null,e('tr',null,e('th',null,'Call'),e('th',null,'Account'),e('th',null,'Status'),e('th',null,'Updated'))),e('tbody',null,...data.map(c=>e('tr',null,e('td',null,c.callSid),e('td',null,c.accountId),e('td',null,c.status),e('td',null,c.updatedAt)))))); }
+      function Callbacks(){ const {loading,data}=useJson('/api/ui/callbacks'); return e('div',null,e('h2',null,'Callbacks'),loading?e('p',null,'Loading…'):e('div',{className:'grid'},...data.map(c=>e('div',{className:'card'},e('strong',null,c.ownerName ?? 'Unassigned'),e('p',null,c.status),e('p',null,c.notes ?? ''),e('a',{href:'/calls/'+c.callSid},'Open call'))))); }
+      function Sync(){ const {loading,data}=useJson('/api/ui/sync-failures'); return e('div',null,e('h2',null,'Sync Failures'),loading?e('p',null,'Loading…'):e('div',{className:'grid'},...data.map(f=>e('div',{className:'card'},e('strong',null,f.provider),e('p',null,f.status),e('p',null,f.errorMessage),e('a',{href:'/calls/'+f.callSid},'Open call'))))); }
+      function App(){ const parts=location.pathname.split('/').filter(Boolean); const initial = parts[1] || 'overview'; const [route,setRoute]=React.useState(initial); const accountId = parts[2]; const page = route==='accounts' && accountId ? e(AccountDetail,{accountId}) : route==='accounts'?e(Accounts):route==='calls'?e(Calls):route==='callbacks'?e(Callbacks):route==='sync'?e(Sync):e(Overview); return e('div',{className:'shell'},e(Nav,{route,setRoute}),e('main',{className:'content'},page));}
+      createRoot(document.getElementById('root')).render(e(App));
+    </script>
+  </body>
+</html>`;
+>>>>>>> origin/codex/redesign-entire-app-ui/ux-rryi1c
 }
 
 function renderTenantPicker(accounts: Account[], viewerEmail: string): string {
@@ -1633,6 +1689,14 @@ export function buildApp(
     reply.type("text/html").send(renderPublicSite(account));
   });
 
+  app.get("/ui", async (_request, reply) => {
+    reply.type("text/html").send(renderReactShell());
+  });
+
+  app.get("/ui/*", async (_request, reply) => {
+    reply.type("text/html").send(renderReactShell());
+  });
+
   app.get("/app", async (request, reply) => {
     const viewer = getViewer(request);
     if (!viewer.userId || !viewer.email) {
@@ -2111,6 +2175,44 @@ export function buildApp(
     audit: adminStore.listAuditEntries(),
   }));
 
+  app.get("/api/ui/overview", async () => ({
+    accounts: adminStore.listAccounts().length,
+    calls: store.list().length,
+    callbacks: adminStore.listCallbacks().length,
+    syncFailures: adminStore.listSyncFailures().length,
+  }));
+
+  app.get("/api/ui/calls", async () =>
+    store.list().map((session) => ({
+      callSid: session.callSid,
+      accountId: session.accountId,
+      status: session.status,
+      updatedAt: session.updatedAt,
+    })),
+  );
+
+  app.get("/api/ui/callbacks", async () =>
+    adminStore.listCallbackTasks().map((task) => ({
+      id: task.id,
+      callSid: task.callSid,
+      ownerName: task.ownerName,
+      status: task.status,
+      notes: task.notes,
+      dueAt: task.dueAt,
+    })),
+  );
+
+  app.get("/api/ui/sync-failures", async () =>
+    adminStore.listSyncFailures().map((failure) => ({
+      id: failure.id,
+      callSid: failure.callSid,
+      provider: failure.provider,
+      status: failure.status,
+      errorMessage: failure.errorMessage,
+      createdAt: failure.createdAt,
+    })),
+  );
+
   app.post("/api/accounts", async (request, reply) => {
     const parsed = accountCreateSchema.safeParse(request.body);
     if (!parsed.success) {
@@ -2355,61 +2457,29 @@ export function buildApp(
   });
 
   app.get("/internal/admin", async (_request, reply) => {
-    const accounts = adminStore.listAccounts();
-    const callbacks = adminStore.listCallbackTasks();
-    const syncFailures = adminStore.listSyncFailures();
-    const calls = store.list();
-    reply
-      .type("text/html")
-      .send(renderPage("Pilot Operations Console", renderAdminOverview(config, accounts, calls, callbacks, syncFailures, adminStore.listAuditEntries())));
+    reply.code(303).header("location", "/ui/overview").send();
   });
 
   app.get("/accounts", async (_request, reply) => {
-    const accounts = adminStore.listAccounts();
-    const routingRulesById = new Map(
-      accounts
-        .map((account) => {
-          const routingRule = adminStore.getRoutingRule(account.id);
-          return routingRule ? [account.id, routingRule] : undefined;
-        })
-        .filter((entry): entry is [string, RoutingRule] => entry !== undefined),
-    );
-    reply.type("text/html").send(renderPage("Accounts", renderAccountList(accounts, routingRulesById)));
+    reply.code(303).header("location", "/ui/accounts").send();
   });
 
   app.get("/accounts/new", async (_request, reply) => {
-    reply.type("text/html").send(renderPage("New Account", renderAccountCreateForm()));
+    reply.code(303).header("location", "/ui/accounts/new").send();
   });
 
   app.get("/accounts/:accountId", async (request, reply) => {
     const { accountId } = request.params as { accountId: string };
-    const account = adminStore.getAccount(accountId);
-    if (!account) {
-      reply.code(404).send({ error: "Account not found" });
-      return;
-    }
-    reply
-      .type("text/html")
-      .send(renderPage(account.name, renderAccountDetail(account, adminStore.getRoutingRule(accountId))));
+    reply.code(303).header("location", `/ui/accounts/${encodeURIComponent(accountId)}`).send();
   });
 
   app.get("/accounts/:accountId/routing", async (request, reply) => {
     const { accountId } = request.params as { accountId: string };
-    const account = adminStore.getAccount(accountId);
-    if (!account) {
-      reply.code(404).send({ error: "Account not found" });
-      return;
-    }
-    reply
-      .type("text/html")
-      .send(renderPage(`${account.name} Routing`, renderRoutingRule(account, adminStore.getRoutingRule(accountId))));
+    reply.code(303).header("location", `/ui/accounts/${encodeURIComponent(accountId)}`).send();
   });
 
   app.get("/calls", async (_request, reply) => {
-    const accounts = adminStore.listAccounts();
-    reply
-      .type("text/html")
-      .send(renderPage("Call Review", renderCallList(store.list(), new Map(accounts.map((account) => [account.id, account])))));
+    reply.code(303).header("location", "/ui/calls").send();
   });
 
   app.get("/calls/:callSid", async (request, reply) => {
@@ -2429,37 +2499,11 @@ export function buildApp(
   });
 
   app.get("/callbacks", async (_request, reply) => {
-    const accounts = adminStore.listAccounts();
-    const calls = store.list();
-    reply
-      .type("text/html")
-      .send(
-        renderPage(
-          "Callback Queue",
-          renderCallbacks(
-            adminStore.listCallbackTasks(),
-            new Map(accounts.map((account) => [account.id, account])),
-            new Map(calls.map((call) => [call.callSid, call])),
-          ),
-        ),
-      );
+    reply.code(303).header("location", "/ui/callbacks").send();
   });
 
   app.get("/sync-failures", async (_request, reply) => {
-    const accounts = adminStore.listAccounts();
-    const calls = store.list();
-    reply
-      .type("text/html")
-      .send(
-        renderPage(
-          "Failed Sync Review",
-          renderSyncFailures(
-            adminStore.listSyncFailures(),
-            new Map(accounts.map((account) => [account.id, account])),
-            new Map(calls.map((call) => [call.callSid, call])),
-          ),
-        ),
-      );
+    reply.code(303).header("location", "/ui/sync").send();
   });
 
   return app;
